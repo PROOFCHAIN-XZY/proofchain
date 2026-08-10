@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["batch-registry"]
+
+# Shared across every contract we add later (credit issuance, retirement, ...)
+# so a soroban-sdk bump is a one-line change instead of an N-crate sweep.
+[workspace.dependencies]
+soroban-sdk = "26.1.0"
+
+# Wasm size is a real cost on Soroban: the contract's own bytecode is a ledger
+# entry that must be uploaded, rent-extended, and re-read on every invocation.
+# These flags are the standard Stellar-recommended set for shipping contracts.
+[profile.release]
+opt-level = "z"       # optimise for size, not speed — no hot loops in here
+overflow-checks = true # keep arithmetic traps; a silent wrap in a weight total is worse than a failed tx
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+# `cargo test` on a release-ish profile would hide the panic messages that make
+# a failing assertion legible, so tests get their own profile that keeps them.
+[profile.release-with-logs]
+inherits = "release"
+debug-assertions = true

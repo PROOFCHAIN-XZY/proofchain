@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  // The buildinfo lives inside dist so that nest-cli's `deleteOutDir` invalidates
+  // it too. Kept outside, a wiped dist plus a stale buildinfo makes tsc believe
+  // everything is already emitted — `nest build` then exits 0 and emits nothing.
+  "compilerOptions": {
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test", "**/*.test.ts"]
+}

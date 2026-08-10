@@ -1,0 +1,23 @@
+[package]
+name = "proofchain-batch-registry"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Soroban registry of sealed ProofChain batches and their double-count guard"
+license = "MIT"
+
+[lib]
+# cdylib is what `cargo build --target wasm32-unknown-unknown` turns into a
+# deployable contract. `rlib` is kept so the crate can also be pulled in as a
+# dependency by future contracts' integration tests.
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+# `testutils` pulls in the local host implementation (ledger, auth mocking,
+# event capture). It must stay a dev-dependency: enabling it in a wasm build
+# would bloat the contract with test-only host code.
+soroban-sdk = { workspace = true, features = ["testutils"] }

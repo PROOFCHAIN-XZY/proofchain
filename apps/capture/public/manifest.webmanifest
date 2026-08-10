@@ -1,0 +1,15 @@
+{
+  "name": "ProofChain Capture",
+  "short_name": "Capture",
+  "description": "Signed, geo-tagged, offline-first weigh-in capture for waste collection hubs.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f2ec",
+  "theme_color": "#111311",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

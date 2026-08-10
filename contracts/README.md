@@ -1,0 +1,77 @@
+# `batch-registry` — Soroban contract (post-pilot)
+
+Typed, stateful on-chain storage for sealed batches, plus the guard that stops a
+batch being credited twice.
+
+**This is not on the MVP path.** The pilot anchors Merkle roots on the *classic*
+Stellar layer (`manageData` + `Memo.hash`), which is implemented and working in
+[`services/anchor-worker`](../services/anchor-worker). This contract is the
+documented next step, and it only earns its place once a buyer has accepted the
+audit report and credits actually need to be issued against these batches.
+
+## Why the anchor is not a contract call
+
+A Soroban `InvokeHostFunctionOp` transaction **cannot carry a memo** — the memo
+must be `MEMO_NONE`. The classic anchor deliberately writes the root twice, into
+a `manageData` entry *and* a `MEMO_HASH`, so either one alone proves the anchor.
+Moving the raw audit trail to Soroban would give that up and cost more per write,
+in exchange for state the audit trail does not need.
+
+What Soroban *is* right for is the part classic cannot express: a `credited` flag
+that can only ever be set once, enforced by the network rather than by our
+database.
+
+## Build
+
+The build target matters, and the obvious one is wrong:
+
+```bash
+# Correct — Soroban SDK 26 requires this on Rust 1.84+
+cargo build --target wasm32v1-none --release
+# -> target/wasm32v1-none/release/proofchain_batch_registry.wasm  (~18 KB)
+```
+
+`wasm32-unknown-unknown` **fails** on any modern toolchain. Rust 1.82+ enables
+the `reference-types` and `multi-value` wasm features on that target, which the
+Soroban environment does not support and which cannot easily be turned off. The
+SDK's build script rejects it outright rather than emitting a contract that would
+fail on deploy. Use `wasm32v1-none` (Rust 1.84+), or pin Rust 1.81 or earlier.
+
+## Test
+
+```bash
+cargo test    # 18 tests
+```
+
+Coverage: initialization and re-initialization, admin-only issuer management,
+registration authorization (including a revoked issuer), duplicate registration,
+zero weight, double crediting, event emission, `get` on a missing batch, the full
+`u64` gram range, and TTL extension.
+
+## Deploy (testnet)
+
+Not yet performed — the contract is built and tested but unreleased.
+
+```bash
+stellar contract deploy \
+  --wasm target/wasm32v1-none/release/proofchain_batch_registry.wasm \
+  --network testnet
+stellar contract invoke --id <CONTRACT_ID> --network testnet -- initialize --admin <G...>
+```
+
+`initialize` must be called before anything else; an uninitialized registry
+rejects every write rather than defaulting to open.
+
+## Design notes
+
+- **Weight is `u64` grams.** No floats on-chain — a rounding difference between
+  two runtimes must never change what a batch says it weighs.
+- **Typed errors.** Failures use `panic_with_error!` with a `#[contracterror]`
+  enum, so a caller gets a discriminable code instead of an opaque trap.
+- **Persistent storage with TTL extension.** An audit record that expires is
+  worse than useless, because its absence looks like evidence of nothing having
+  happened. Entries are written to persistent storage and their TTL is extended
+  on access.
+- **Admin plus an issuer allow-list.** Registration is not open to any address:
+  an unrestricted `register` would let anyone write batches into the registry
+  that a verifier might later read as ours.

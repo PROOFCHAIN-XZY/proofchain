@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "paths": {
+      "@shared/canonical": ["../../packages/shared/src/canonical-core.ts"],
+      "@shared/types": ["../../packages/shared/src/types.ts"]
+    }
+  },
+  "include": ["index.ts", "App.tsx", "src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"]
+}

@@ -1,0 +1,40 @@
+{
+  "name": "@proofchain/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.7.0",
+    "@noble/hashes": "^1.6.1",
+    "@proofchain/shared": "*",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "^57.0.11",
+    "expo-asset": "~57.0.9",
+    "expo-camera": "~57.0.3",
+    "expo-crypto": "~57.0.1",
+    "expo-file-system": "~57.0.2",
+    "expo-location": "~57.0.8",
+    "expo-network": "~57.0.1",
+    "expo-secure-store": "~57.0.1",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.2",
+    "react-native-safe-area-context": "~5.7.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@types/react": "~19.2.4",
+    "babel-plugin-module-resolver": "^5.0.3",
+    "babel-preset-expo": "~57.0.6",
+    "typescript": "~6.0.3",
+    "vitest": "^2.1.8"
+  }
+}

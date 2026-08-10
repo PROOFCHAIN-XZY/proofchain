@@ -1,0 +1,43 @@
+{
+  "name": "@proofchain/shared",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./canonical-core": {
+      "types": "./dist/canonical-core.d.ts",
+      "require": "./dist/canonical-core.js",
+      "default": "./dist/canonical-core.js"
+    },
+    "./src/canonical-core": {
+      "types": "./src/canonical-core.ts",
+      "default": "./src/canonical-core.ts"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "require": "./dist/types.js",
+      "default": "./dist/types.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@noble/curves": "^1.9.7",
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

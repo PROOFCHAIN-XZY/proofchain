@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "ProofChain Collect",
+    "slug": "proofchain-collect",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "proofchain",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "org.proofchain.collect",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "org.proofchain.collect",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Photographs each weigh-in so the record can be audited.",
+        "NSLocationWhenInUseUsageDescription": "Confirms a weigh-in happened at the collection hub."
+      }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Photographs each weigh-in so the record can be audited."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Confirms a weigh-in happened at the collection hub."
+        }
+      ],
+      "expo-asset",
+      "expo-secure-store",
+      "expo-status-bar"
+    ]
+  }
+}
