@@ -40,6 +40,14 @@ export interface AuditReportEvent {
   capturedAt: string;
   receivedAt: string;
   photoHash: string;
+  /** True once bytes matching photoHash have been uploaded and stored. */
+  photoAvailable: boolean;
+  /**
+   * Where to fetch those bytes. Relative on purpose: the report is served from
+   * whatever host the reader reached us on, and baking an absolute URL in would
+   * hand a buyer a link that only resolves on our own network.
+   */
+  photoUrl: string | null;
   payloadHash: string;
   leaf: string;
   merkleProof: MerkleProofStep[];
@@ -196,6 +204,8 @@ export class ReportsService {
         capturedAt: e.capturedAt.toISOString(),
         receivedAt: e.receivedAt.toISOString(),
         photoHash: e.photoHash,
+        photoAvailable: e.photoUri !== null,
+        photoUrl: e.photoUri === null ? null : `/events/${e.id}/photo`,
         payloadHash: e.payloadHash,
         leaf: leaves[index]!,
         merkleProof: proof,
@@ -297,6 +307,7 @@ export class ReportsService {
       attestationNotes: [
         "The Stellar anchor proves these records existed unaltered at the anchored ledger time. It does not, by itself, prove the material weighed was real or additional.",
         "Source-level assurance comes from device signatures, hub geofencing, photo evidence and duplicate detection, recorded per event above.",
+      "Each event's photoHash was signed by the capture device. Where photoAvailable is true, the stored bytes have been checked to hash to that value; download the photo and recompute the sha256 to confirm it independently.",
         "Baseline and additionality figures must be completed against the selected Verra Plastic Waste Reduction Standard track before submission.",
       ],
     };
