@@ -48,6 +48,18 @@ export class BatchesController {
     return this.batches.pendingAnchor();
   }
 
+  /**
+   * Declared before ":id" so the literal path is not swallowed by the UUID
+   * route. Operator-only: it names batches, weights and failure detail, which
+   * is more than a public verification endpoint should volunteer.
+   */
+  @Roles("admin", "operator")
+  @Get("anchor-health")
+  @ApiOperation({ summary: "Batches awaiting an anchor, with failure history" })
+  anchorHealth() {
+    return this.batches.anchorHealth();
+  }
+
   @Get(":id")
   findOne(@Param("id", ParseUUIDPipe) id: string) {
     return this.batches.findOne(id);

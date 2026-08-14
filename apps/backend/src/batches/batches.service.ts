@@ -13,6 +13,7 @@ import {
   verifyMerkleProof,
   type BatchStatus,
   type EventVerification,
+  type AnchorAttemptOutcome,
   type MaterialType,
   type StellarNetwork,
 } from "@proofchain/shared";
@@ -27,7 +28,7 @@ import {
   type LedgerConfirmation,
 } from "../ledger/ledger-verification.service";
 import { AnchorAttemptsService } from "./anchor-attempts.service";
-import { isDueForRetry } from "./anchor-backoff";
+import { isDueForRetry, isStuck, nextAttemptAt } from "./anchor-backoff";
 
 /**
  * Batch lifecycle: open -> sealed -> processed -> sold.
@@ -44,6 +45,29 @@ const LEGAL_TRANSITIONS: Record<BatchStatus, BatchStatus[]> = {
   processed: ["sold"],
   sold: [],
 };
+
+export interface AwaitingAnchor {
+  batchId: string;
+  sealedAt: string | null;
+  totalWeightKg: number;
+  eventCount: number;
+  failedAttempts: number;
+  lastOutcome: AnchorAttemptOutcome | null;
+  lastAttemptAt: string | null;
+  lastDetail: string | null;
+  /** null when the batch is due now. */
+  nextAttemptAt: string | null;
+  /** Repeated failure past the point where a transient cause is plausible. */
+  stuck: boolean;
+}
+
+export interface AnchorHealth {
+  checkedAt: string;
+  awaitingAnchor: number;
+  stuck: number;
+  unanchoredWeightKg: number;
+  batches: AwaitingAnchor[];
+}
 
 export interface BatchLedgerStatus {
   batchId: string;
@@ -315,6 +339,54 @@ export class BatchesService {
           lastFailureDetail: summary?.lastDetail ?? null,
         };
       });
+  }
+
+  /**
+   * What anchoring is currently doing, for an operator rather than a worker.
+   *
+   * The question it answers is the one nobody could previously ask without
+   * reading container logs: is anchoring working, and if not, which batches are
+   * stuck and why. Unanchored batches only — an anchored batch's history is on
+   * the batch itself.
+   */
+  async anchorHealth(now = new Date()): Promise<AnchorHealth> {
+    const sealed = await this.batches
+      .createQueryBuilder("b")
+      .leftJoin(AnchorRecordEntity, "a", "a.batchId = b.id")
+      .where("b.status != :open", { open: "open" })
+      .andWhere("a.id IS NULL")
+      .andWhere("b.merkleRoot IS NOT NULL")
+      .orderBy("b.sealedAt", "ASC")
+      .select(["b.id", "b.merkleRoot", "b.sealedAt", "b.totalWeightKg", "b.eventCount"])
+      .getMany();
+
+    const summaries = await this.attempts.summariesFor(sealed.map((b) => b.id));
+
+    const batches: AwaitingAnchor[] = sealed.map((b) => {
+      const summary = summaries.get(b.id);
+      return {
+        batchId: b.id,
+        sealedAt: b.sealedAt?.toISOString() ?? null,
+        totalWeightKg: Number(b.totalWeightKg),
+        eventCount: b.eventCount,
+        failedAttempts: summary?.failures ?? 0,
+        lastOutcome: summary?.lastOutcome ?? null,
+        lastAttemptAt: summary?.lastAttemptAt?.toISOString() ?? null,
+        lastDetail: summary?.lastDetail ?? null,
+        nextAttemptAt: nextAttemptAt(summary)?.toISOString() ?? null,
+        stuck: isStuck(summary),
+      };
+    });
+
+    return {
+      checkedAt: now.toISOString(),
+      awaitingAnchor: batches.length,
+      // The single number an operator or an alert should watch.
+      stuck: batches.filter((b) => b.stuck).length,
+      // Weight that is sealed and unanchored is weight that cannot be sold yet.
+      unanchoredWeightKg: Number(batches.reduce((sum, b) => sum + b.totalWeightKg, 0).toFixed(3)),
+      batches,
+    };
   }
 
   /**
