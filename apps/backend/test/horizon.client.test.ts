@@ -107,3 +107,70 @@ describe("HorizonClient.accountData", () => {
     expect(result.ok && result.value).toEqual({});
   });
 });
+
+describe("HorizonClient — failure modes", () => {
+  it("reports a 404 as not_found, not as unavailable", async () => {
+    respondWith({ status: 404, title: "Resource Missing" }, 404);
+
+    const result = await client.transaction("b".repeat(64));
+
+    expect(result.ok).toBe(false);
+    // The distinction is the whole contract: not_found means the ledger does
+    // not have this transaction, which is a verification failure. unavailable
+    // means we could not ask, which is not a finding about the batch at all.
+    expect(!result.ok && result.reason).toBe("not_found");
+  });
+
+  it("reports a 5xx as unavailable", async () => {
+    respondWith({ status: 503 }, 503);
+
+    const result = await client.transaction("b".repeat(64));
+
+    expect(!result.ok && result.reason).toBe("unavailable");
+  });
+
+  it("reports a rate-limited read as unavailable", async () => {
+    respondWith({ status: 429 }, 429);
+
+    expect((await client.transaction("b".repeat(64))).ok).toBe(false);
+  });
+
+  it("treats a non-JSON body as unavailable rather than throwing", async () => {
+    respondWith("<html>gateway error</html>");
+
+    const result = await client.transaction("b".repeat(64));
+
+    // A proxy returning an HTML error page must not become a 500 on a public
+    // verification endpoint.
+    expect(!result.ok && result.reason).toBe("unavailable");
+  });
+
+  it("gives up on a hanging Horizon within the configured timeout", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          }),
+      ),
+    );
+
+    const started = Date.now();
+    const result = await new HorizonClient(HORIZON, 100).transaction("b".repeat(64));
+
+    expect(!result.ok && result.reason).toBe("unavailable");
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("reports a network-level failure as unavailable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+
+    expect((await client.accountData("GABC")).ok).toBe(false);
+  });
+});
