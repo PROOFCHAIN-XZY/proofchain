@@ -8,6 +8,7 @@ import {
 } from "../src/database/entities";
 import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
+import { stubLedgerVerification } from "./support/services";
 
 /**
  * The batch lifecycle is the hinge of the product: before seal a batch is a
@@ -27,6 +28,7 @@ function buildService(database: TestDatabase): BatchesService {
     dataSource.getRepository(CollectionEventEntity),
     dataSource.getRepository(AnchorRecordEntity),
     dataSource,
+    stubLedgerVerification(),
   );
 }
 

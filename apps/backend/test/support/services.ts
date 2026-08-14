@@ -1,5 +1,9 @@
 import type { DataSource } from "typeorm";
 import { EventsService } from "../../src/events/events.service";
+import type {
+  LedgerConfirmation,
+  LedgerVerificationService,
+} from "../../src/ledger/ledger-verification.service";
 import { ReportsService } from "../../src/reports/reports.service";
 import {
   AnchorRecordEntity,
@@ -52,4 +56,30 @@ export function buildReportsService(dataSource: DataSource): ReportsService {
     dataSource.getRepository(HubEntity),
     dataSource.getRepository(AnchorRecordEntity),
   );
+}
+
+/**
+ * A ledger verifier that never consults Horizon.
+ *
+ * The batch and report suites are about Merkle structure and SQL, and should
+ * not gain a network dependency to exercise either. Suites that are actually
+ * about ledger read-back drive LedgerVerificationService directly.
+ *
+ * Defaults to the unchecked answer rather than a confirming one, so a test that
+ * cares about confirmation has to say so.
+ */
+export function stubLedgerVerification(
+  confirmation: Partial<LedgerConfirmation> = {},
+): LedgerVerificationService {
+  const answer: LedgerConfirmation = {
+    checked: false,
+    rootMatchesLedger: null,
+    memoMatches: false,
+    dataEntryMatches: false,
+    ledger: null,
+    checkedAt: new Date().toISOString(),
+    detail: "ledger read-back stubbed out in tests",
+    ...confirmation,
+  };
+  return { verify: async () => answer } as unknown as LedgerVerificationService;
 }
