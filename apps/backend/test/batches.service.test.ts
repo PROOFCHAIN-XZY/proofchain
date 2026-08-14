@@ -247,3 +247,29 @@ describe("BatchesService.removeEvent", () => {
     await expect(service.removeEvent(batch.id, loose.id)).rejects.toThrow(/is not in batch/);
   });
 });
+
+describe("BatchesService — weight totals", () => {
+  it("keeps three-decimal totals exact under float accumulation", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    // 0.1 + 0.2 is the canonical float trap; naive summation yields
+    // 0.30000000000000004 and the batch would advertise a weight no scale
+    // ever measured.
+    const a = await insertEvent(db.dataSource, seeded, { weightKg: 0.1 });
+    const b = await insertEvent(db.dataSource, seeded, { weightKg: 0.2 });
+
+    const updated = await service.addEvents(batch.id, [a.id, b.id]);
+    expect(Number(updated.totalWeightKg)).toBe(0.3);
+  });
+
+  it("reads weights back as numbers, not numeric strings", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded, { weightKg: 12.345 });
+    await service.addEvents(batch.id, [event.id]);
+
+    const reloaded = await service.findOne(batch.id);
+    // node-postgres hands back `numeric` as a string; a string here would
+    // concatenate rather than add in every downstream total.
+    expect(typeof reloaded.totalWeightKg).toBe("number");
+    expect(reloaded.totalWeightKg).toBe(12.345);
+  });
+});
