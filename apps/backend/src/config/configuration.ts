@@ -5,7 +5,22 @@ export interface AppConfig {
   jwtSecret: string;
   jwtExpiresIn: string;
   corsOrigins: string[];
+  /**
+   * Where weigh-in photo bytes are written.
+   *
+   * The column and this setting have existed since the first migration, but
+   * nothing ever wrote to either: photoUri was hardcoded null and only the
+   * sha256 was kept. That made the photo_present integrity check purely
+   * structural — it proved the hash was well-formed, not that it corresponded
+   * to any image an auditor could look at.
+   */
   photoStorageDir: string;
+  /**
+   * Ceiling on a single upload. A modern phone camera produces 2-6 MB; the
+   * limit exists so an unauthenticated caller cannot fill the disk one
+   * request at a time.
+   */
+  maxPhotoBytes: number;
   maxClockSkewSeconds: number;
   stellarNetwork: "testnet" | "public";
   /**
@@ -74,6 +89,7 @@ export function loadConfig(): AppConfig {
       .map((s) => s.trim())
       .filter(Boolean),
     photoStorageDir: process.env.PHOTO_STORAGE_DIR ?? "./var/photos",
+    maxPhotoBytes: Number(process.env.MAX_PHOTO_BYTES ?? 8 * 1024 * 1024),
     maxClockSkewSeconds: Number(process.env.MAX_CLOCK_SKEW_SECONDS ?? 900),
     stellarNetwork: (process.env.STELLAR_NETWORK ?? "testnet") as AppConfig["stellarNetwork"],
     stellarHorizonUrl: process.env.STELLAR_HORIZON_URL ?? "https://horizon-testnet.stellar.org",
