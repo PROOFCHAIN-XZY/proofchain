@@ -25,6 +25,12 @@ export interface HorizonTransaction {
   memoType: string;
   /** base64 as Horizon returns it; decoding is the verifier's job. */
   memo: string | null;
+  /**
+   * The account that submitted the anchor. Read off the ledger rather than
+   * stored by us, so the manageData corroboration is looked up on the account
+   * the network says signed the transaction, not on one we assert it was.
+   */
+  sourceAccount: string | null;
 }
 
 /** Why a read produced nothing — the distinction a verifier depends on. */
@@ -62,6 +68,7 @@ export class HorizonClient {
         successful: body.successful === true,
         memoType: String(body.memo_type ?? "none"),
         memo: typeof body.memo === "string" ? body.memo : null,
+        sourceAccount: typeof body.source_account === "string" ? body.source_account : null,
       },
     };
   }
