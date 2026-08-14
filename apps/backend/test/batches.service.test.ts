@@ -936,3 +936,98 @@ describe("BatchesService.pendingAnchor — backoff", () => {
     expect(pending.map((b) => b.id)).toEqual([fresh]);
   });
 });
+
+describe("BatchesService — anchor outcome history", () => {
+  let attempts: ReturnType<typeof buildAnchorAttemptsService>;
+
+  async function sealed(): Promise<string> {
+    const batch = await service.create(seeded.hub.id, "PET");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+    return batch.id;
+  }
+
+  async function anchor(batchId: string, txHash = "a".repeat(64)) {
+    return service.recordAnchor(batchId, {
+      merkleRoot: (await service.findOne(batchId)).merkleRoot!,
+      stellarTxHash: txHash,
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${batchId}`,
+      anchoredAt: "2026-03-01T12:00:00.000Z",
+    });
+  }
+
+  beforeEach(() => {
+    attempts = buildAnchorAttemptsService(db.dataSource);
+  });
+
+  it("records a success alongside the anchor record", async () => {
+    const id = await sealed();
+    await anchor(id);
+
+    const history = await attempts.historyFor(id);
+
+    expect(history).toHaveLength(1);
+    expect(history[0]!.outcome).toBe("succeeded");
+    expect(history[0]!.stellarTxHash).toBe("a".repeat(64));
+  });
+
+  it("keeps the earlier failures in the history after a batch recovers", async () => {
+    const id = await sealed();
+    await service.recordAnchorFailure(id, { outcome: "failed", detail: "horizon 504" });
+    await service.recordAnchorFailure(id, { outcome: "failed", detail: "horizon 504" });
+    await anchor(id);
+
+    const summary = (await attempts.summariesFor([id])).get(id)!;
+
+    // "Anchored, eventually, after two failures" is the operationally
+    // interesting statement, and it survives only if both halves are kept.
+    expect(summary.attempts).toBe(3);
+    expect(summary.failures).toBe(2);
+    expect(summary.lastOutcome).toBe("succeeded");
+  });
+
+  it("does not record a second success when the write-back is retried", async () => {
+    const id = await sealed();
+    await anchor(id);
+    await anchor(id);
+
+    // A retried write-back is not a second attempt at anchoring.
+    expect(await attempts.historyFor(id)).toHaveLength(1);
+  });
+
+  it("records an unverified attempt with the transaction hash", async () => {
+    const id = await sealed();
+
+    await service.recordAnchorFailure(id, {
+      outcome: "unverified",
+      stellarTxHash: "e".repeat(64),
+      detail: "submitted, but the memo did not match on read-back",
+    });
+
+    const [attempt] = await attempts.historyFor(id);
+    // This is the case that may have cost a real fee; the hash is what an
+    // operator pastes into an explorer to find out.
+    expect(attempt!.outcome).toBe("unverified");
+    expect(attempt!.stellarTxHash).toBe("e".repeat(64));
+  });
+
+  it("refuses a failure report for a batch that is already anchored", async () => {
+    const id = await sealed();
+    await anchor(id);
+
+    await expect(
+      service.recordAnchorFailure(id, { outcome: "failed", detail: "stale worker" }),
+    ).rejects.toThrow(/already anchored/);
+  });
+
+  it("refuses a failure report for a batch that was never sealed", async () => {
+    const open = await service.create(seeded.hub.id, "PET");
+
+    await expect(
+      service.recordAnchorFailure(open.id, { outcome: "failed" }),
+    ).rejects.toThrow(/unsealed batch/);
+  });
+});
