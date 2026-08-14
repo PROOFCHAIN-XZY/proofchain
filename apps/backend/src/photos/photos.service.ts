@@ -30,6 +30,12 @@ import { PhotoStore } from "./photo-store";
  * queue that posts the weigh-in.
  */
 
+export interface ServedPhoto {
+  bytes: Buffer;
+  sha256: string;
+  contentType: string;
+}
+
 export interface PhotoAttachment {
   eventId: string;
   sha256: string;
@@ -94,5 +100,39 @@ export class PhotosService {
     await this.events.update({ id: eventId }, { photoUri: stored.relativePath });
 
     return { eventId, sha256, bytes: stored.bytes, contentType, alreadyStored };
+  }
+
+  /**
+   * The photo for a weigh-in, ready to serve.
+   *
+   * Looked up through the event rather than by digest so a caller cannot walk
+   * the store by guessing hashes: to read a photo you must already know which
+   * event it belongs to, and event ids are UUIDs.
+   */
+  async forEvent(eventId: string): Promise<ServedPhoto | null> {
+    const event = await this.events.findOne({ where: { id: eventId } });
+    if (!event) throw new NotFoundException(`event ${eventId} not found`);
+
+    // photoUri is only set once bytes have been verified and stored, so its
+    // absence is the honest answer: the photo was never uploaded.
+    if (!event.photoUri) return null;
+
+    const bytes = await this.store.read(event.photoHash);
+    if (!bytes) {
+      // The row says stored, the disk disagrees. Loud, because it means the
+      // evidence behind an already-issued audit report has gone missing.
+      this.logger.error(
+        `event ${eventId} references photo ${event.photoHash}, which is not in the store`,
+      );
+      return null;
+    }
+
+    return {
+      bytes,
+      sha256: event.photoHash,
+      // Re-derived from the bytes on the way out rather than stored: the
+      // response's declared type then cannot disagree with what is served.
+      contentType: detectImageType(bytes) ?? "application/octet-stream",
+    };
   }
 }
