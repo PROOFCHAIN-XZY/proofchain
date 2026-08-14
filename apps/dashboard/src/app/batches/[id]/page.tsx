@@ -2,7 +2,15 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
-import { api, ApiError, BACKEND_URL, TOKEN_COOKIE, kg, type AwaitingAnchor } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  BACKEND_URL,
+  TOKEN_COOKIE,
+  kg,
+  type AnchorAttempt,
+  type AwaitingAnchor,
+} from "@/lib/api";
 import { batchTone, formatDateTime, formatKg, shortHash } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -86,15 +94,22 @@ export default async function BatchPage({
 
   const anchored = Boolean(batch.anchor);
 
-  // Only asked for when it can say something: an anchored batch's history is
-  // settled, and an unsealed one has nothing to anchor yet.
+  // Only asked for when it can say something: an unsealed batch has nothing to
+  // anchor yet. An *anchored* one still can — a batch that took nine attempts
+  // is worth showing after it succeeds, which the health view cannot do because
+  // it drops the batch on success.
   let awaiting: AwaitingAnchor | null = null;
-  if (!anchored && batch.merkleRoot) {
+  let attempts: AnchorAttempt[] = [];
+  if (batch.merkleRoot) {
     try {
-      const health = await api.anchorHealth();
-      awaiting = health.batches.find((b) => b.batchId === batch.id) ?? null;
+      attempts = await api.anchorAttempts(batch.id);
+      if (!anchored) {
+        const health = await api.anchorHealth();
+        awaiting = health.batches.find((b) => b.batchId === batch.id) ?? null;
+      }
     } catch {
-      awaiting = null;
+      // Anchor history is context, never the point of the page.
+      attempts = [];
     }
   }
   const collectedKg = events.reduce((sum, e) => sum + kg(e.weightKg), 0);
@@ -253,6 +268,54 @@ export default async function BatchPage({
           ) : null}
         </dl>
       </div>
+
+      {attempts.length > 0 && (
+        <>
+          <h2>Anchoring history</h2>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th className="num">#</th>
+                  <th>When</th>
+                  <th>Outcome</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {attempts.map((a) => (
+                  <tr key={a.id}>
+                    <td className="num">{a.attemptNumber}</td>
+                    <td className="hash">{formatDateTime(a.occurredAt)}</td>
+                    <td>
+                      <span
+                        className="pill"
+                        data-tone={a.outcome === "succeeded" ? "verified" : "pending"}
+                      >
+                        {a.outcome}
+                      </span>
+                    </td>
+                    <td>
+                      {a.detail ?? "—"}
+                      {/*
+                        An unverified attempt may have cost a real fee and the
+                        transaction may still settle, so the hash is the first
+                        thing an operator needs to go and check.
+                      */}
+                      {a.stellarTxHash ? (
+                        <>
+                          {" "}
+                          <span className="hash">{shortHash(a.stellarTxHash, 8)}</span>
+                        </>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       <h2>Weigh-ins in this batch</h2>
       {events.length === 0 ? (

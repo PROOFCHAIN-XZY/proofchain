@@ -184,8 +184,18 @@ export interface AnchorHealth {
   batches: AwaitingAnchor[];
 }
 
+export interface AnchorAttempt {
+  id: string;
+  attemptNumber: number;
+  outcome: "failed" | "unverified" | "succeeded";
+  detail: string | null;
+  stellarTxHash: string | null;
+  occurredAt: string;
+}
+
 export const api = {
   anchorHealth: () => request<AnchorHealth>("/batches/anchor-health"),
+  anchorAttempts: (id: string) => request<AnchorAttempt[]>(`/batches/${id}/anchor-attempts`),
   listBatches: (status?: string) =>
     request<Batch[]>(`/batches${status ? `?status=${status}` : ""}`),
   getBatch: (id: string) => request<Batch>(`/batches/${id}`),
