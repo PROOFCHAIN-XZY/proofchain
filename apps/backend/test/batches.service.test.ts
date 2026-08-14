@@ -124,3 +124,34 @@ describe("BatchesService.addEvents", () => {
     expect((await service.findOne(batch.id)).eventCount).toBe(0);
   });
 });
+
+describe("BatchesService.addEvents — quarantine", () => {
+  it("refuses a quarantined event", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const bad = await insertEvent(db.dataSource, seeded, {
+      quarantined: true,
+      integrity: {
+        outcome: "fail",
+        findings: [{ check: "geofence", outcome: "fail", detail: "1.2 km from hub" }],
+      },
+    });
+
+    // The whole economic argument rests on this: a weigh-in that failed an
+    // integrity check must not be able to reach a saleable credit.
+    await expect(service.addEvents(batch.id, [bad.id])).rejects.toThrow(/not eligible/);
+    expect((await service.findOne(batch.id)).eventCount).toBe(0);
+  });
+
+  it("keeps clean events out of a batch when a quarantined one is in the same call", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const good = await insertEvent(db.dataSource, seeded);
+    const bad = await insertEvent(db.dataSource, seeded, { quarantined: true });
+
+    await expect(service.addEvents(batch.id, [good.id, bad.id])).rejects.toThrow(/not eligible/);
+
+    const reloaded = await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .findOneByOrFail({ id: good.id });
+    expect(reloaded.batchId).toBeNull();
+  });
+});
