@@ -171,6 +171,16 @@ export interface AnchorRecord {
   anchoredAt: string;
 }
 
+/**
+ * How one attempt to anchor a batch ended.
+ *
+ * `unverified` is deliberately distinct from `failed`: the transaction was
+ * submitted and may have cost a real fee, and it may still appear on the ledger
+ * a moment later. Treating it as an outright failure would hide a case that
+ * needs a human to look at Horizon.
+ */
+export type AnchorAttemptOutcome = "failed" | "unverified" | "succeeded";
+
 /** One sibling step on the path from a leaf to the root. */
 export interface MerkleProofStep {
   hash: string;
