@@ -575,6 +575,18 @@ export class BatchesService {
     };
   }
 
+  /**
+   * Everything recorded about anchoring this batch, newest first.
+   *
+   * Survives the anchor: the health view is a work queue and drops a batch as
+   * soon as it succeeds, but "this batch took nine attempts" stays relevant to
+   * anyone reviewing it afterwards.
+   */
+  async anchorAttemptsFor(batchId: string): Promise<AnchorAttemptEntity[]> {
+    await this.findOne(batchId);
+    return this.attempts.historyFor(batchId);
+  }
+
   async eventsOf(batchId: string): Promise<CollectionEventEntity[]> {
     await this.findOne(batchId);
     return this.orderedEvents(batchId);

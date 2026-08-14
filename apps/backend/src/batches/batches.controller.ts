@@ -65,6 +65,20 @@ export class BatchesController {
     return this.batches.findOne(id);
   }
 
+  /**
+   * The anchoring history for one batch.
+   *
+   * Operator-only and separate from the health view: that view is a work queue
+   * and drops a batch the moment it anchors, which is exactly when someone
+   * reviewing the batch wants to know it took nine attempts to get there.
+   */
+  @Roles("admin", "operator")
+  @Get(":id/anchor-attempts")
+  @ApiOperation({ summary: "Every recorded attempt to anchor this batch" })
+  anchorAttempts(@Param("id", ParseUUIDPipe) id: string) {
+    return this.batches.anchorAttemptsFor(id);
+  }
+
   @Get(":id/events")
   events(@Param("id", ParseUUIDPipe) id: string) {
     return this.batches.eventsOf(id);
