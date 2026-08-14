@@ -9,6 +9,7 @@ import {
 import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
 import { buildAnchorAttemptsService, stubLedgerVerification } from "./support/services";
+import { STUCK_AFTER_FAILURES } from "../src/batches/anchor-backoff";
 
 /**
  * The batch lifecycle is the hinge of the product: before seal a batch is a
@@ -1029,5 +1030,95 @@ describe("BatchesService — anchor outcome history", () => {
     await expect(
       service.recordAnchorFailure(open.id, { outcome: "failed" }),
     ).rejects.toThrow(/unsealed batch/);
+  });
+});
+
+describe("BatchesService.anchorHealth", () => {
+  let attempts: ReturnType<typeof buildAnchorAttemptsService>;
+
+  async function sealed(weightKg = 10): Promise<string> {
+    const batch = await service.create(seeded.hub.id, "PET");
+    const event = await insertEvent(db.dataSource, seeded, { weightKg });
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+    return batch.id;
+  }
+
+  beforeEach(() => {
+    attempts = buildAnchorAttemptsService(db.dataSource);
+  });
+
+  it("reports a healthy pipeline as nothing stuck", async () => {
+    await sealed();
+
+    const health = await service.anchorHealth();
+
+    expect(health.awaitingAnchor).toBe(1);
+    expect(health.stuck).toBe(0);
+    expect(health.batches[0]!.failedAttempts).toBe(0);
+    expect(health.batches[0]!.nextAttemptAt).toBeNull();
+  });
+
+  it("totals the weight that cannot be sold until it is anchored", async () => {
+    await sealed(12.5);
+    await sealed(7.25);
+
+    expect((await service.anchorHealth()).unanchoredWeightKg).toBe(19.75);
+  });
+
+  it("flags a batch as stuck only after repeated failure", async () => {
+    const id = await sealed();
+    for (let i = 0; i < STUCK_AFTER_FAILURES - 1; i += 1) {
+      await attempts.record(id, { outcome: "failed", detail: "horizon 504" });
+    }
+    expect((await service.anchorHealth()).stuck).toBe(0);
+
+    await attempts.record(id, { outcome: "failed", detail: "horizon 504" });
+
+    const health = await service.anchorHealth();
+    expect(health.stuck).toBe(1);
+    expect(health.batches[0]!.stuck).toBe(true);
+  });
+
+  it("says why the last attempt failed and when the next one is due", async () => {
+    const id = await sealed();
+    await attempts.record(id, {
+      outcome: "failed",
+      detail: "tx_insufficient_fee: base fee below network minimum",
+    });
+
+    const [batch] = (await service.anchorHealth()).batches;
+
+    // Both halves of what an operator needs: the cause, and whether waiting is
+    // enough or intervention is required.
+    expect(batch!.lastDetail).toMatch(/tx_insufficient_fee/);
+    expect(batch!.lastOutcome).toBe("failed");
+    expect(new Date(batch!.nextAttemptAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("drops a batch from the view once it anchors", async () => {
+    const id = await sealed();
+    await attempts.record(id, { outcome: "failed" });
+    await service.recordAnchor(id, {
+      merkleRoot: (await service.findOne(id)).merkleRoot!,
+      stellarTxHash: "a".repeat(64),
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${id}`,
+      anchoredAt: "2026-03-01T12:00:00.000Z",
+    });
+
+    // The view is a work queue, not a history. A recovered batch leaving it is
+    // what makes a non-zero count meaningful.
+    const health = await service.anchorHealth();
+    expect(health.awaitingAnchor).toBe(0);
+    expect(health.stuck).toBe(0);
+  });
+
+  it("ignores batches that have not been sealed", async () => {
+    await service.create(seeded.hub.id, "PET");
+
+    // An open batch is not waiting on anchoring; it is waiting on an operator.
+    expect((await service.anchorHealth()).awaitingAnchor).toBe(0);
   });
 });
