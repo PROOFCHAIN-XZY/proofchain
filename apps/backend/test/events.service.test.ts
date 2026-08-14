@@ -218,3 +218,29 @@ describe("EventsService.list", () => {
     expect(rows.length).toBeLessThanOrEqual(500);
   });
 });
+
+describe("EventsService.list — photo availability", () => {
+  it("separates weigh-ins whose photo has arrived from those still missing it", async () => {
+    const withPhoto = await ingest();
+    await ingest();
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .update({ id: withPhoto.eventId }, { photoUri: "ab/cd/abcd.bin" });
+
+    // What an operator asks before sealing: which records are still missing
+    // their evidence, and therefore whose phone has not finished syncing.
+    expect(await service.list({ hasPhoto: false })).toHaveLength(1);
+    expect((await service.list({ hasPhoto: true }))[0]!.id).toBe(withPhoto.eventId);
+  });
+
+  it("combines with the other filters rather than replacing them", async () => {
+    await ingest();
+    const quarantined = await ingest({ weightKg: 900 });
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .update({ id: quarantined.eventId }, { photoUri: "ab/cd/abcd.bin" });
+
+    expect(await service.list({ hasPhoto: true, quarantined: false })).toHaveLength(0);
+    expect(await service.list({ hasPhoto: true, quarantined: true })).toHaveLength(1);
+  });
+});

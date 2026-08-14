@@ -172,5 +172,15 @@ export class ListEventsQueryDto {
   @IsOptional() @IsBoolean() @Type(() => Boolean) batched?: boolean;
   @IsOptional() @IsBoolean() @Type(() => Boolean) quarantined?: boolean;
 
+  /**
+   * Filter on whether the photo bytes have been received.
+   *
+   * The operator-facing question this answers is "which weigh-ins are still
+   * missing their evidence, and whose phone are they on" — worth asking before
+   * a batch is sealed, because after sealing the membership is frozen and the
+   * photo can only ever be attached to a record already sold.
+   */
+  @IsOptional() @IsBoolean() @Type(() => Boolean) hasPhoto?: boolean;
+
   @IsOptional() @IsNumber() @Min(1) @Max(500) @Type(() => Number) limit?: number;
 }
