@@ -234,6 +234,38 @@ Expected output (if anchored):
 
 If `onChain` is null, the batch has not yet been anchored (it's still sealed but pending).
 
+### Read ProofChain's own ledger check — then ignore it
+
+Since the read-back was added, `onChain.ledgerConfirmation` reports what Horizon told *our* server when the report was rendered:
+
+```json
+{
+  "rootMatchesLedger": true,
+  "memoMatches": true,
+  "dataEntryMatches": false,
+  "checkedAt": "2026-03-01T12:04:11.921Z",
+  "detail": "ledger confirms the sealed root (memo=true, dataEntry=false)"
+}
+```
+
+Three values are possible, and the difference matters:
+
+| `rootMatchesLedger` | Meaning |
+|---|---|
+| `true` | Horizon returned the anchoring transaction and it carries this root. |
+| `false` | Horizon answered, and the root it carries is **not** this one — or there is no such transaction. Treat the batch as unproven and escalate. |
+| `null` | Horizon could not be reached. This says nothing about the batch. |
+
+`dataEntryMatches: false` alongside `memoMatches: true` is normal, not a warning: the `manageData` entry is overwritten by whichever batch that account anchored most recently, while the memo stays on the transaction permanently.
+
+**This field is a convenience, not evidence.** It is ProofChain reporting on ProofChain. A batch is only independently verified when *you* run the Horizon queries below and compare the bytes yourself. The steps that follow are the ones that actually settle the question — the field above just tells you whether they are likely to.
+
+You can also ask for the same check on its own, without rendering the whole report:
+
+```bash
+curl http://localhost:3000/batches/$BATCH_ID/ledger | jq '.confirmation'
+```
+
 ### Fetch the Transaction from Horizon
 
 Using the tx hash, query Stellar's public ledger:
@@ -467,6 +499,10 @@ chmod +x verify-batch.sh
 - Check `.onChain.network` — is it the network you expect?
 - If `onChain` is null, the batch is pending; wait for the anchor worker to process it
 - Verify the transaction URL in `.onChain.explorerUrl`
+
+### `ledgerConfirmation.rootMatchesLedger` is null
+
+Horizon was unreachable from ProofChain's server when the report was built — a timeout, a rate limit, or an outage. It is not a finding about the batch. Re-request the report, or skip it entirely and run the Horizon queries in Step 4 yourself; your network path to Horizon is independent of ours, which is rather the point.
 
 ### Stellar transaction not found
 
