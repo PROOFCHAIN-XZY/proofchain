@@ -55,6 +55,7 @@ export function buildReportsService(dataSource: DataSource): ReportsService {
     dataSource.getRepository(CollectorEntity),
     dataSource.getRepository(HubEntity),
     dataSource.getRepository(AnchorRecordEntity),
+    stubLedgerVerification(),
   );
 }
 
