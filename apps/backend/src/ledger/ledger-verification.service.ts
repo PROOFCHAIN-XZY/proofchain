@@ -68,6 +68,17 @@ export class LedgerVerificationService {
    */
   private readonly confirmed = new Map<string, LedgerConfirmation>();
 
+  /**
+   * Reads already in flight, so N concurrent callers asking about the same
+   * anchor make one Horizon request rather than N.
+   *
+   * The cache alone does not cover this: it is only populated once a read
+   * *finishes*, and the window this closes is exactly the one that matters —
+   * a batch report going public, or an anchor confirming for the first time,
+   * is when simultaneous first-time requests arrive.
+   */
+  private readonly inFlight = new Map<string, Promise<LedgerConfirmation>>();
+
   constructor(private readonly horizon: HorizonClient) {}
 
   /** Keyed on both halves: a different root against the same tx is a different question. */
@@ -76,19 +87,32 @@ export class LedgerVerificationService {
   }
 
   async verify(anchor: AnchorToVerify): Promise<LedgerConfirmation> {
-    const cached = this.confirmed.get(LedgerVerificationService.cacheKey(anchor));
+    const key = LedgerVerificationService.cacheKey(anchor);
+
+    const cached = this.confirmed.get(key);
     if (cached) return cached;
 
-    const confirmation = await this.readFromLedger(anchor);
+    const existing = this.inFlight.get(key);
+    if (existing) return existing;
 
-    // Only positives are cached. A `false` may be Horizon lagging behind a
-    // just-submitted transaction, and a `null` is not an answer at all —
-    // caching either would freeze a transient state into a permanent verdict.
-    if (confirmation.rootMatchesLedger === true) {
-      this.confirmed.set(LedgerVerificationService.cacheKey(anchor), confirmation);
-    }
+    const read = this.readFromLedger(anchor)
+      .then((confirmation) => {
+        // Only positives are cached. A `false` may be Horizon lagging behind a
+        // just-submitted transaction, and a `null` is not an answer at all —
+        // caching either would freeze a transient state into a permanent verdict.
+        if (confirmation.rootMatchesLedger === true) {
+          this.confirmed.set(key, confirmation);
+        }
+        return confirmation;
+      })
+      .finally(() => {
+        // Cleared whatever the outcome, so a failed read never wedges the key
+        // into permanently returning a rejected promise.
+        this.inFlight.delete(key);
+      });
 
-    return confirmation;
+    this.inFlight.set(key, read);
+    return read;
   }
 
   private async readFromLedger(anchor: AnchorToVerify): Promise<LedgerConfirmation> {
