@@ -24,6 +24,13 @@ export interface QueuedWeighIn {
   createdAt: string;
   syncedAt: string | null;
   serverEventId: string | null;
+  /**
+   * When the photo bytes were accepted by the server, or null if they have
+   * not been. Tracked separately from syncedAt because the two succeed
+   * independently: a weigh-in can be safely recorded while its photo is still
+   * waiting for enough bandwidth to send.
+   */
+  photoUploadedAt: string | null;
 }
 
 const DB_NAME = "proofchain-capture";

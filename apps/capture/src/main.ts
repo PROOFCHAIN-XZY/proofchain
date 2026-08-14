@@ -506,6 +506,7 @@ async function commit(): Promise<void> {
     createdAt: new Date().toISOString(),
     syncedAt: null,
     serverEventId: null,
+    photoUploadedAt: null,
   });
 
   // Reset only the per-weigh-in evidence; keep material and the GPS fix, since
