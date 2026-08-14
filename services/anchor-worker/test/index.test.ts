@@ -40,6 +40,8 @@ const pendingBatch = {
   merkleRoot: "a".repeat(64),
   totalWeightKg: 10,
   eventCount: 2,
+  failedAttempts: 0,
+  lastFailureDetail: null,
 };
 
 function pendingResponse(batches: unknown[]): Response {
@@ -61,6 +63,10 @@ describe("anchorOnce", () => {
       expect(init?.signal).toBeInstanceOf(AbortSignal);
       if (url.endsWith("/batches/pending-anchor")) {
         return Promise.resolve(pendingResponse([pendingBatch]));
+      }
+      // The failure report is expected here; recording an anchor is not.
+      if (url.endsWith("/anchor-failure")) {
+        return Promise.resolve(new Response("{}", { status: 201 }));
       }
       throw new Error(`unexpected fetch to ${url}`);
     });
@@ -84,14 +90,30 @@ describe("anchorOnce", () => {
     const anchored = await anchorOnce();
 
     expect(anchored).toBe(0);
-    const postCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST");
-    expect(postCalls).toHaveLength(0);
+
+    // The distinction that matters: nothing was recorded as an anchor.
+    const anchorWriteBacks = fetchSpy.mock.calls.filter(
+      ([url, init]) => init?.method === "POST" && String(url).endsWith("/anchor"),
+    );
+    expect(anchorWriteBacks).toHaveLength(0);
+
+    // But the attempt is reported, so the batch is not retried immediately and
+    // an operator can see the transaction that may have cost a fee.
+    const reports = fetchSpy.mock.calls.filter(([url]) => String(url).endsWith("/anchor-failure"));
+    expect(reports).toHaveLength(1);
+    expect(JSON.parse(String(reports[0]![1]?.body))).toMatchObject({
+      outcome: "unverified",
+      stellarTxHash: "tx1",
+    });
   });
 
   it("abandons a batch whose Horizon submission hangs instead of stalling the cycle forever", async () => {
     const fetchSpy = vi.fn((url: string) => {
       if (url.endsWith("/batches/pending-anchor")) {
         return Promise.resolve(pendingResponse([pendingBatch]));
+      }
+      if (url.endsWith("/anchor-failure")) {
+        return Promise.resolve(new Response("{}", { status: 201 }));
       }
       throw new Error(`unexpected fetch to ${url}`);
     });

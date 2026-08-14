@@ -43,6 +43,9 @@ interface PendingBatch {
   merkleRoot: string;
   totalWeightKg: number;
   eventCount: number;
+  /** Supplied by the backend, which owns the retry schedule. */
+  failedAttempts: number;
+  lastFailureDetail: string | null;
 }
 
 /** Never assume a caught value is an Error — fetch/AbortSignal/SDK code can throw anything. */
@@ -75,6 +78,44 @@ async function fetchPending(): Promise<PendingBatch[]> {
     throw new Error(`backend returned ${res.status} for pending-anchor`);
   }
   return (await res.json()) as PendingBatch[];
+}
+
+/**
+ * Tell the backend an attempt produced no anchor.
+ *
+ * Until this existed the worker logged the failure and moved on, which meant
+ * the failure existed only in this process's stdout: the backend could not tell
+ * a batch that had failed four hundred times from one sealed a minute ago, and
+ * so kept handing the same doomed batch back every fifteen seconds.
+ *
+ * Best-effort by design. If this call fails too, the batch simply stays in the
+ * queue and is retried — the old behaviour — so a reporting outage degrades to
+ * where we started rather than dropping the anchor.
+ */
+async function reportFailure(
+  batchId: string,
+  outcome: "failed" | "unverified",
+  detail: string,
+  stellarTxHash?: string,
+): Promise<void> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/batches/${batchId}/anchor-failure`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-anchor-worker-token": ANCHOR_WORKER_TOKEN,
+      },
+      // Trimmed to the backend's limit here rather than being rejected there:
+      // losing the report over a long stack trace would be a poor trade.
+      body: JSON.stringify({ outcome, detail: detail.slice(0, 2000), stellarTxHash }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.error(`[report-failed] batch=${batchId}: backend returned ${res.status}`);
+    }
+  } catch (error) {
+    console.error(`[report-failed] batch=${batchId}: ${errorMessage(error)}`);
+  }
 }
 
 async function recordAnchor(batchId: string, body: unknown): Promise<void> {
@@ -120,6 +161,16 @@ export async function anchorOnce(): Promise<number> {
   let anchored = 0;
 
   for (const batch of pending) {
+    if (batch.failedAttempts > 0) {
+      // The backend held this batch back until now, so its history is the
+      // context for whatever happens next. Without it every attempt reads as
+      // the first one.
+      console.log(
+        `[retry] batch=${batch.id} previous failures=${batch.failedAttempts}: ` +
+          `${batch.lastFailureDetail ?? "no detail recorded"}`,
+      );
+    }
+
     try {
       const result = await withTimeout(
         anchorBatchRoot(batch.merkleRoot, batch.id, config),
@@ -146,6 +197,16 @@ export async function anchorOnce(): Promise<number> {
           `[unverified] batch=${batch.id} tx=${result.stellarTxHash} ` +
             `memo=${verification.memoMatches} data=${verification.dataEntryMatches} — not recording`,
         );
+        // Reported as `unverified`, not `failed`: a transaction was submitted
+        // and may have cost a real fee, and it may still appear on the ledger.
+        // Recording the hash is what lets an operator go and find out.
+        await reportFailure(
+          batch.id,
+          "unverified",
+          `submitted but not confirmed on read-back (memo=${verification.memoMatches}, ` +
+            `dataEntry=${verification.dataEntryMatches})`,
+          result.stellarTxHash,
+        );
         continue;
       }
 
@@ -165,7 +226,12 @@ export async function anchorOnce(): Promise<number> {
       );
     } catch (error) {
       // One bad batch must not stall the queue behind it.
-      console.error(`[anchor-failed] batch=${batch.id}:`, errorMessage(error));
+      const detail = errorMessage(error);
+      console.error(
+        `[anchor-failed] batch=${batch.id} attempt=${batch.failedAttempts + 1}:`,
+        detail,
+      );
+      await reportFailure(batch.id, "failed", detail);
     }
   }
 
