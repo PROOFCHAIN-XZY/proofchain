@@ -59,9 +59,39 @@ function base64ToHex(value: string): string {
 export class LedgerVerificationService {
   private readonly logger = new Logger(LedgerVerificationService.name);
 
+  /**
+   * A confirmed anchor is an immutable fact — a ledger entry, once written,
+   * never changes — so a positive result is cached for the process lifetime.
+   * Without this, a batch report page reloaded by a buyer would re-hit Horizon
+   * on every request and make our public endpoint's availability depend on
+   * theirs.
+   */
+  private readonly confirmed = new Map<string, LedgerConfirmation>();
+
   constructor(private readonly horizon: HorizonClient) {}
 
+  /** Keyed on both halves: a different root against the same tx is a different question. */
+  private static cacheKey(anchor: AnchorToVerify): string {
+    return `${anchor.stellarTxHash}:${anchor.merkleRoot}`;
+  }
+
   async verify(anchor: AnchorToVerify): Promise<LedgerConfirmation> {
+    const cached = this.confirmed.get(LedgerVerificationService.cacheKey(anchor));
+    if (cached) return cached;
+
+    const confirmation = await this.readFromLedger(anchor);
+
+    // Only positives are cached. A `false` may be Horizon lagging behind a
+    // just-submitted transaction, and a `null` is not an answer at all —
+    // caching either would freeze a transient state into a permanent verdict.
+    if (confirmation.rootMatchesLedger === true) {
+      this.confirmed.set(LedgerVerificationService.cacheKey(anchor), confirmation);
+    }
+
+    return confirmation;
+  }
+
+  private async readFromLedger(anchor: AnchorToVerify): Promise<LedgerConfirmation> {
     const tx = await this.horizon.transaction(anchor.stellarTxHash);
 
     if (!tx.ok) {
