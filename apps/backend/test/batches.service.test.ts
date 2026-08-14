@@ -179,3 +179,25 @@ describe("BatchesService.addEvents — hub and material boundaries", () => {
     expect((await service.findOne(batch.id)).eventCount).toBe(0);
   });
 });
+
+describe("BatchesService.addEvents — sealed membership", () => {
+  it("refuses to add events once the batch is sealed", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const first = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [first.id]);
+    await service.seal(batch.id);
+
+    const late = await insertEvent(db.dataSource, seeded);
+
+    // Adding after seal would change the set the root commits to, silently
+    // invalidating every proof already handed to a buyer.
+    await expect(service.addEvents(batch.id, [late.id])).rejects.toThrow(/is sealed, not open/);
+  });
+
+  it("404s when the batch does not exist", async () => {
+    const event = await insertEvent(db.dataSource, seeded);
+    await expect(
+      service.addEvents("00000000-0000-0000-0000-000000000000", [event.id]),
+    ).rejects.toThrow(/not found/);
+  });
+});
