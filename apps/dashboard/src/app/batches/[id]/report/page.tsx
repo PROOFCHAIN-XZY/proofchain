@@ -49,13 +49,22 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
     );
   }
 
+  const internallyConsistent = report.proof.rootMatchesSealedValue && report.proof.allProofsValid;
+  const ledgerSays = report.onChain?.ledgerConfirmation.rootMatchesLedger ?? null;
+
+  /**
+   * "Verified" now requires the ledger to have said so, not merely for our own
+   * database to hold an anchor row. The previous rule showed "independently
+   * verifiable against the Stellar ledger" on the strength of a record we
+   * wrote ourselves — the exact claim a buyer is here to avoid taking on trust.
+   */
   const proofState = !report.proof.merkleRoot
     ? "pending"
-    : report.proof.rootMatchesSealedValue && report.proof.allProofsValid && report.onChain
-      ? "verified"
-      : report.proof.rootMatchesSealedValue && report.proof.allProofsValid
-        ? "pending"
-        : "broken";
+    : !internallyConsistent || ledgerSays === false
+      ? "broken"
+      : ledgerSays === true
+        ? "verified"
+        : "pending";
 
   const csvHref = `${process.env.NEXT_PUBLIC_BACKEND_URL ?? BACKEND_URL}/batches/${id}/report/events.csv`;
   const jsonHref = `${process.env.NEXT_PUBLIC_BACKEND_URL ?? BACKEND_URL}/batches/${id}/report`;
@@ -120,9 +129,13 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
           {proofState === "verified"
             ? "Independently verifiable against the Stellar ledger"
             : proofState === "pending"
-              ? "Sealed and internally consistent — not yet anchored on-chain"
+              ? report.onChain
+                ? "Anchored — awaiting confirmation from the Stellar ledger"
+                : "Sealed and internally consistent — not yet anchored on-chain"
               : proofState === "broken"
-                ? "INCONSISTENT — do not rely on this batch"
+                ? ledgerSays === false
+                  ? "LEDGER DISAGREES — do not rely on this batch"
+                  : "INCONSISTENT — do not rely on this batch"
                 : "Not sealed"}
         </h3>
         <dl>
@@ -156,6 +169,16 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
               <dd>{report.onChain.dataEntryKey}</dd>
               <dt>Anchored at</dt>
               <dd>{formatDateTime(report.onChain.anchoredAt)}</dd>
+              <dt>Ledger says</dt>
+              <dd>
+                {ledgerSays === true
+                  ? "root confirmed on-chain"
+                  : ledgerSays === false
+                    ? "ROOT NOT FOUND ON-CHAIN"
+                    : "not confirmed — Horizon unreachable"}
+                {" · checked "}
+                {formatDateTime(report.onChain.ledgerConfirmation.checkedAt)}
+              </dd>
             </>
           ) : null}
         </dl>
@@ -288,7 +311,10 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         <div className="stat">
           <dt>Explained</dt>
           <dd style={{ fontSize: "1.0625rem" }}>
-            <span className="pill" data-tone={report.reconciliation.explained ? "verified" : "broken"}>
+            <span
+              className="pill"
+              data-tone={report.reconciliation.explained ? "verified" : "broken"}
+            >
               {report.reconciliation.explained ? "yes" : "no"}
             </span>
           </dd>
@@ -343,7 +369,10 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         ))}
       </ol>
 
-      <p className="note" style={{ marginTop: "2rem", borderTop: "1px solid var(--rule)", paddingTop: "1rem" }}>
+      <p
+        className="note"
+        style={{ marginTop: "2rem", borderTop: "1px solid var(--rule)", paddingTop: "1rem" }}
+      >
         To verify independently: recompute each leaf as sha256(0x00 ‖ payloadHash), combine pairs as
         sha256(0x01 ‖ left ‖ right) in the stated order, and compare the resulting root against the
         memo hash of the Stellar transaction above. The full event list, including every payload

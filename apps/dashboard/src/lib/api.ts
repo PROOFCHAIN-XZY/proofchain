@@ -94,7 +94,13 @@ export interface AuditReport {
     createdAt: string;
   };
   hub: { id: string; code: string; name: string; lat: number; lng: number };
-  collectors: { id: string; name: string; kycLevel: string; eventCount: number; weightKg: number }[];
+  collectors: {
+    id: string;
+    name: string;
+    kycLevel: string;
+    eventCount: number;
+    weightKg: number;
+  }[];
   chainOfCustody: {
     id: string;
     fromParty: string;
@@ -129,6 +135,14 @@ export interface AuditReport {
     dataEntryKey: string;
     anchoredAt: string;
     explorerUrl: string;
+    /** What Horizon said when the report was rendered; null means we could not ask. */
+    ledgerConfirmation: {
+      rootMatchesLedger: boolean | null;
+      memoMatches: boolean;
+      dataEntryMatches: boolean;
+      checkedAt: string;
+      detail: string;
+    };
   } | null;
   events: {
     eventId: string;
