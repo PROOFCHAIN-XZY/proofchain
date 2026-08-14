@@ -205,6 +205,8 @@ node scripts/demo-e2e.mjs
 - **Batch sealing** — Merkle tree computation, membership freeze.
 - **Stellar anchoring** — Classic layer (`manageData` + `memo.hash`), testnet only.
 - **Independent verification** — Merkle proofs, Horizon lookup, audit report.
+- **Ledger read-back** — the verify endpoint and the audit report re-read the
+  anchor off Horizon rather than reporting our own stored record of it.
 - **Operator dashboard** — View batches, events, custody transfers.
 - **Offline-first capture** — PWA and Expo app with IndexedDB queue.
 
@@ -229,6 +231,7 @@ node scripts/demo-e2e.mjs
 - `GET /batches/:id/report` — Audit artifact (JSON)
 - `GET /batches/:id/report/events.csv` — Event CSV export
 - `GET /batches/:id/verify/:eventId` — Merkle proof for one event
+- `GET /batches/:id/ledger` — re-read this batch's anchor off Horizon
 - `POST /events` — Ingest a signed weigh-in
 
 ### Operator (JWT required)
@@ -242,6 +245,13 @@ node scripts/demo-e2e.mjs
 
 ## Known Limitations
 
+- **Ledger read-back is best-effort** — `rootMatchesLedger` is `null` when
+  Horizon cannot be reached. That is a fact about the network, not about the
+  batch, and an auditor should run the Horizon queries in
+  [verification.md](docs/verification.md) rather than rely on our answer.
+- **Confirmations are cached in memory** — a confirmed anchor is cached for the
+  process lifetime (a ledger entry never changes), so the cache is lost on
+  restart. Persisting it is worth doing once there is more than one API replica.
 - **Timestamp-only integrity** — Clock skew tolerance is ±15 seconds. Offline sync is allowed (warn outcome) but flagged.
 - **No rollback** — Once a batch is sealed, it cannot be modified. Events cannot be removed from a sealed batch.
 - **Single-thread anchoring** — The worker processes one batch at a time. High-volume use requires async job queue (BullMQ integration planned).
