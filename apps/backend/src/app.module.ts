@@ -7,6 +7,7 @@ import { loadConfig } from "./config/configuration";
 import { AuthModule, JwtAuthGuard } from "./auth/auth.module";
 import { AuthController } from "./auth/auth.controller";
 import { HealthController } from "./health/health.controller";
+import { RootController } from "./health/root.controller";
 import { RegistryModule } from "./collectors/registry.module";
 import { EventsModule } from "./events/events.module";
 import { BatchesModule } from "./batches/batches.module";
@@ -40,7 +41,7 @@ import { RateLimitGuard } from "./common/rate-limit.guard";
     CustodyModule,
     ReportsModule,
   ],
-  controllers: [AuthController, HealthController],
+  controllers: [RootController, AuthController, HealthController],
   providers: [
     // Authentication is on by default; routes opt out with @Public().
     { provide: APP_GUARD, useClass: JwtAuthGuard },

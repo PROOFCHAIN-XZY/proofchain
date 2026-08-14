@@ -9,7 +9,7 @@ import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import helmet from "helmet";
 import { AppModule } from "./app.module";
 import { loadConfig } from "./config/configuration";
-import { isAllowedOrigin } from "./config/cors.js";
+import { isAllowedOrigin } from "./config/cors";
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
@@ -55,6 +55,16 @@ async function bootstrap(): Promise<void> {
         .setDescription("Verified waste-to-credit platform — MVP (Stellar testnet)")
         .setVersion("0.1.0")
         .addBearerAuth()
+        // POST /batches/:id/anchor is guarded by AnchorWorkerGuard, not the JWT
+        // guard, so the bearer token above cannot reach it. The controller
+        // already declares @ApiSecurity("anchor-worker-token"); without the
+        // matching scheme registered here that annotation refers to nothing and
+        // Swagger renders no field for it, leaving the endpoint untestable from
+        // the UI. The name must stay in sync with the controller's string.
+        .addApiKey(
+          { type: "apiKey", name: "x-anchor-worker-token", in: "header" },
+          "anchor-worker-token",
+        )
         .build(),
     );
     SwaggerModule.setup("docs", app, doc);
