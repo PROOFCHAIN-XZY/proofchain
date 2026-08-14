@@ -177,3 +177,44 @@ describe("EventsService.ingest — replay", () => {
     expect(await db.dataSource.getRepository(CollectionEventEntity).count()).toBe(1);
   });
 });
+
+describe("EventsService.list", () => {
+  it("separates clean events from quarantined ones", async () => {
+    await ingest();
+    await ingest({ weightKg: 900 });
+
+    expect(await service.list({ quarantined: false })).toHaveLength(1);
+    expect(await service.list({ quarantined: true })).toHaveLength(1);
+    expect(await service.list({})).toHaveLength(2);
+  });
+
+  it("filters by hub and by collector", async () => {
+    const other = await seedHub(db.dataSource);
+    await ingest();
+    const foreign = other.payload();
+    await service.ingest(foreign, other.sign(foreign));
+
+    expect(await service.list({ hubId: seeded.hub.id })).toHaveLength(1);
+    expect(await service.list({ collectorId: other.collector.id })).toHaveLength(1);
+  });
+
+  it("finds the unbatched events an operator can still batch", async () => {
+    const first = await ingest();
+    await ingest();
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .update({ id: first.eventId }, { batchId: null });
+
+    expect(await service.list({ batched: false })).toHaveLength(2);
+    expect(await service.list({ batched: true })).toHaveLength(0);
+  });
+
+  it("caps the page size regardless of the requested limit", async () => {
+    await ingest();
+
+    // The endpoint is public. An unbounded limit is a trivially cheap way to
+    // make the server serialise the entire event table on demand.
+    const rows = await service.list({ limit: 100_000 });
+    expect(rows.length).toBeLessThanOrEqual(500);
+  });
+});
