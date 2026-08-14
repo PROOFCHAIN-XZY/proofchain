@@ -6,7 +6,7 @@ import {
   CollectionEventEntity,
 } from "../src/database/entities";
 import { createTestDatabase, type TestDatabase } from "./support/database";
-import { seedHub, type SeededHub } from "./support/fixtures";
+import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
 
 /**
  * The batch lifecycle is the hinge of the product: before seal a batch is a
@@ -81,5 +81,46 @@ describe("BatchesService.list", () => {
     await service.create(seeded.hub.id, "hdpe");
 
     expect(await service.list()).toHaveLength(2);
+  });
+});
+
+describe("BatchesService.addEvents", () => {
+  it("attaches eligible events and recomputes the totals", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const a = await insertEvent(db.dataSource, seeded, { weightKg: 10.25 });
+    const b = await insertEvent(db.dataSource, seeded, { weightKg: 4.5 });
+
+    const updated = await service.addEvents(batch.id, [a.id, b.id]);
+
+    expect(updated.eventCount).toBe(2);
+    expect(Number(updated.totalWeightKg)).toBe(14.75);
+    // Membership lives on the event row, not on a join table — the batch is
+    // whatever currently points at it.
+    const rows = await service.eventsOf(batch.id);
+    expect(rows.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it("refuses an event that is already in another batch", async () => {
+    const first = await service.create(seeded.hub.id, "pet");
+    const second = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+
+    await service.addEvents(first.id, [event.id]);
+
+    await expect(service.addEvents(second.id, [event.id])).rejects.toThrow(/not eligible/);
+    expect((await service.findOne(second.id)).eventCount).toBe(0);
+  });
+
+  it("rejects the whole call when any event is ineligible", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const good = await insertEvent(db.dataSource, seeded);
+
+    await expect(
+      service.addEvents(batch.id, [good.id, "00000000-0000-0000-0000-000000000000"]),
+    ).rejects.toThrow(/not eligible/);
+
+    // All-or-nothing: a partially applied add would leave the operator
+    // believing a batch holds events it does not.
+    expect((await service.findOne(batch.id)).eventCount).toBe(0);
   });
 });
