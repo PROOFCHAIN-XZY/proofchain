@@ -315,3 +315,35 @@ describe("ReportsService — ledger confirmation", () => {
     expect(report.onChain?.ledgerConfirmation.detail).toMatch(/could not reach/);
   });
 });
+
+describe("ReportsService — photo evidence", () => {
+  it("marks an event with no uploaded photo as unavailable", async () => {
+    const report = await reports.buildAuditReport(await sealedBatch([4]));
+
+    // The digest is still published: an auditor holding the original photo
+    // can verify it even when we do not hold the bytes.
+    expect(report.events[0]!.photoHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(report.events[0]!.photoAvailable).toBe(false);
+    expect(report.events[0]!.photoUrl).toBeNull();
+  });
+
+  it("links to the photo once the bytes are stored", async () => {
+    const batchId = await sealedBatch([4]);
+    const [event] = await batches.eventsOf(batchId);
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .update({ id: event!.id }, { photoUri: "ab/cd/abcd.bin" });
+
+    const report = await reports.buildAuditReport(batchId);
+
+    expect(report.events[0]!.photoAvailable).toBe(true);
+    // Relative: the report must resolve from whatever host served it.
+    expect(report.events[0]!.photoUrl).toBe(`/events/${event!.id}/photo`);
+  });
+
+  it("tells the reader how to check the photo themselves", async () => {
+    const report = await reports.buildAuditReport(await sealedBatch([1]));
+
+    expect(report.attestationNotes.join(" ")).toMatch(/recompute the sha256/i);
+  });
+});
