@@ -12,7 +12,13 @@ import {
 import { ApiOperation, ApiSecurity, ApiTags } from "@nestjs/swagger";
 import { BatchesService } from "./batches.service";
 import { AnchorWorkerGuard, Public, Roles } from "../auth/auth.module";
-import { AddEventsDto, AdvanceStatusDto, CreateBatchDto, RecordAnchorDto } from "../common/dto";
+import {
+  AddEventsDto,
+  AdvanceStatusDto,
+  CreateBatchDto,
+  RecordAnchorDto,
+  RecordAnchorFailureDto,
+} from "../common/dto";
 import type { BatchStatus } from "@proofchain/shared";
 
 @ApiTags("batches")
@@ -96,6 +102,23 @@ export class BatchesController {
   @ApiOperation({ summary: "Anchor worker writes back the Stellar transaction" })
   recordAnchor(@Param("id", ParseUUIDPipe) id: string, @Body() dto: RecordAnchorDto) {
     return this.batches.recordAnchor(id, dto);
+  }
+
+  /**
+   * The worker reporting that an attempt produced no anchor.
+   *
+   * Guarded by the same shared token as the anchor write-back, and for a
+   * sharper reason: an anonymous caller able to post failures could park every
+   * sealed batch in maximum backoff and stop anchoring altogether, quietly,
+   * while the pipeline continued to look merely slow.
+   */
+  @Public()
+  @UseGuards(AnchorWorkerGuard)
+  @ApiSecurity("anchor-worker-token")
+  @Post(":id/anchor-failure")
+  @ApiOperation({ summary: "Anchor worker reports an attempt that produced no anchor" })
+  recordAnchorFailure(@Param("id", ParseUUIDPipe) id: string, @Body() dto: RecordAnchorFailureDto) {
+    return this.batches.recordAnchorFailure(id, dto);
   }
 
   /**
