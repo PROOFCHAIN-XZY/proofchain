@@ -209,10 +209,15 @@ node scripts/demo-e2e.mjs
   anchor off Horizon rather than reporting our own stored record of it.
 - **Operator dashboard** — View batches, events, custody transfers.
 - **Offline-first capture** — PWA and Expo app with IndexedDB queue.
+- **Photo evidence** — Photos upload separately from the weigh-in and are stored
+  only if they hash to the digest the device signed.
 
 ## What's NOT in Scope Yet
 
-- **Photo verification** — Photo bytes are hashed but not analysed for material/tampering.
+- **Photo content analysis** — Bytes are now stored and checked against the
+  signed hash, so an auditor can view the image and confirm it is the one
+  captured. What the image *depicts* is still not analysed: no material
+  classification, no tamper or staging detection.
 - **Behavioral baselining** — Per-collector anomaly detection deferred to v2.
 - **Soroban credit contract** — Post-pilot; classic layer proves immutability, Soroban reserves stateful credit logic.
 - **Public network deployment** — Testnet only.
@@ -227,6 +232,8 @@ node scripts/demo-e2e.mjs
 ## API Endpoints (Swagger at /docs in dev mode)
 
 ### Public (no auth required)
+- `POST /events/:id/photo` — Upload photo bytes for a signed weigh-in
+- `GET /events/:id/photo` — The stored photo, if uploaded
 - `GET /batches/:id` — Fetch batch metadata
 - `GET /batches/:id/report` — Audit artifact (JSON)
 - `GET /batches/:id/report/events.csv` — Event CSV export
@@ -255,6 +262,10 @@ node scripts/demo-e2e.mjs
 - **Timestamp-only integrity** — Clock skew tolerance is ±15 seconds. Offline sync is allowed (warn outcome) but flagged.
 - **No rollback** — Once a batch is sealed, it cannot be modified. Events cannot be removed from a sealed batch.
 - **Single-thread anchoring** — The worker processes one batch at a time. High-volume use requires async job queue (BullMQ integration planned).
+- **Photos are stored on local disk** — `PHOTO_STORAGE_DIR` is a filesystem path,
+  so it needs a mounted volume and a backup policy; there is no object store or
+  replication yet. Photos are personal data about identifiable collectors and
+  should be treated accordingly.
 - **No rate limiting per collector** — Integrity v1 has no behavioral throttling; v2 will add per-collector quotas.
 - **Testnet only** — Public network deployment requires security audit and Verra vetting.
 
