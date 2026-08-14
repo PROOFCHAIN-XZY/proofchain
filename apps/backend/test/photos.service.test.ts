@@ -147,3 +147,49 @@ describe("PhotosService.attach", () => {
     await expect(service.attach(event.id, JPEG)).resolves.toMatchObject({ sha256: JPEG_SHA });
   });
 });
+
+describe("PhotosService.forEvent", () => {
+  it("returns the bytes, digest and derived content type", async () => {
+    const event = await insertEvent(db.dataSource, seeded, { photoHash: JPEG_SHA });
+    await service.attach(event.id, JPEG);
+
+    const served = await service.forEvent(event.id);
+
+    expect(served?.bytes).toEqual(JPEG);
+    expect(served?.sha256).toBe(JPEG_SHA);
+    expect(served?.contentType).toBe("image/jpeg");
+  });
+
+  it("serves bytes that still hash to the signed digest", async () => {
+    const event = await insertEvent(db.dataSource, seeded, { photoHash: JPEG_SHA });
+    await service.attach(event.id, JPEG);
+
+    const served = await service.forEvent(event.id);
+
+    // The check an auditor repeats after downloading. If it ever fails, the
+    // photo in the report is not the photo that was signed.
+    expect(PhotoStore.sha256Of(served!.bytes)).toBe(event.photoHash);
+  });
+
+  it("returns null for an event whose photo was never uploaded", async () => {
+    const event = await insertEvent(db.dataSource, seeded, { photoHash: JPEG_SHA });
+
+    expect(await service.forEvent(event.id)).toBeNull();
+  });
+
+  it("returns null when the row points at bytes the store does not have", async () => {
+    const event = await insertEvent(db.dataSource, seeded, { photoHash: JPEG_SHA });
+    await service.attach(event.id, JPEG);
+    await rm(root, { recursive: true, force: true });
+
+    // Disk loss, a restored database against an empty volume, a bad backup.
+    // The endpoint degrades to "no photo" rather than throwing.
+    expect(await service.forEvent(event.id)).toBeNull();
+  });
+
+  it("404s for an event that does not exist", async () => {
+    await expect(
+      service.forEvent("00000000-0000-0000-0000-000000000000"),
+    ).rejects.toThrow(/not found/);
+  });
+});
