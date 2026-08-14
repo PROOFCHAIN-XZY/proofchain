@@ -66,6 +66,31 @@ export class HorizonClient {
     };
   }
 
+  /**
+   * The account's manageData entries, base64 as stored.
+   *
+   * The anchor writes the root twice — a memo on the transaction and a data
+   * entry on the account — so that either alone still proves the anchor. The
+   * data entry is the weaker of the two (a later batch on the same account
+   * overwrites it), which is exactly why it is read separately and never
+   * required.
+   */
+  async accountData(accountId: string): Promise<HorizonResult<Record<string, string>>> {
+    const result = await this.getJson(`/accounts/${encodeURIComponent(accountId)}`);
+    if (!result.ok) return result;
+
+    const data = result.value.data;
+    if (data === null || typeof data !== "object") {
+      return { ok: true, value: {} };
+    }
+
+    const entries: Record<string, string> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      if (typeof value === "string") entries[key] = value;
+    }
+    return { ok: true, value: entries };
+  }
+
   private async getJson(path: string): Promise<HorizonResult<Record<string, unknown>>> {
     const url = `${this.baseUrl}${path}`;
 
