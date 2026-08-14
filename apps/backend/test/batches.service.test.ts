@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { hashLeaf, merkleRootHex } from "@proofchain/shared";
 import { BatchesService } from "../src/batches/batches.service";
 import {
   AnchorRecordEntity,
@@ -271,5 +272,47 @@ describe("BatchesService — weight totals", () => {
     // concatenate rather than add in every downstream total.
     expect(typeof reloaded.totalWeightKg).toBe("number");
     expect(reloaded.totalWeightKg).toBe(12.345);
+  });
+});
+
+describe("BatchesService.seal", () => {
+  it("freezes the root, the totals and the sealed timestamp", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const events = [
+      await insertEvent(db.dataSource, seeded, { weightKg: 5 }),
+      await insertEvent(db.dataSource, seeded, { weightKg: 7.5 }),
+      await insertEvent(db.dataSource, seeded, { weightKg: 2.25 }),
+    ];
+    await service.addEvents(
+      batch.id,
+      events.map((e) => e.id),
+    );
+
+    const sealed = await service.seal(batch.id);
+
+    expect(sealed.status).toBe("sealed");
+    expect(sealed.merkleRoot).toMatch(/^[0-9a-f]{64}$/);
+    expect(sealed.sealedAt).toBeInstanceOf(Date);
+    expect(sealed.eventCount).toBe(3);
+    expect(Number(sealed.totalWeightKg)).toBe(14.75);
+  });
+
+  it("produces the root an auditor recomputes from the event list alone", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const events = [
+      await insertEvent(db.dataSource, seeded),
+      await insertEvent(db.dataSource, seeded),
+    ];
+    await service.addEvents(
+      batch.id,
+      events.map((e) => e.id),
+    );
+    const sealed = await service.seal(batch.id);
+
+    // This is the whole verification story in one assertion: the stored root
+    // is reproducible from public data, using only the documented algorithm.
+    const ordered = await service.eventsOf(batch.id);
+    const expected = merkleRootHex(ordered.map((e) => hashLeaf(e.payloadHash)));
+    expect(sealed.merkleRoot).toBe(expected);
   });
 });
