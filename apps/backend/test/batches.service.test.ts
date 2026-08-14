@@ -155,3 +155,27 @@ describe("BatchesService.addEvents — quarantine", () => {
     expect(reloaded.batchId).toBeNull();
   });
 });
+
+describe("BatchesService.addEvents — hub and material boundaries", () => {
+  it("refuses an event captured at a different hub", async () => {
+    const other = await seedHub(db.dataSource);
+    const batch = await service.create(seeded.hub.id, "pet");
+    const foreign = await insertEvent(db.dataSource, other);
+
+    // Hub membership is what ties a batch to a geofence and an operator; a
+    // cross-hub event would make the batch's provenance unstateable.
+    await expect(service.addEvents(batch.id, [foreign.id])).rejects.toThrow(/not eligible/);
+  });
+
+  it("refuses an event whose material differs from the batch", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const hdpe = await insertEvent(db.dataSource, seeded, { material: "hdpe" });
+
+    // Distinguished from the eligibility rejection: the event is otherwise
+    // addable, so the operator needs to be told which rule it broke.
+    await expect(service.addEvents(batch.id, [hdpe.id])).rejects.toThrow(
+      /do not match batch material pet/,
+    );
+    expect((await service.findOne(batch.id)).eventCount).toBe(0);
+  });
+});
