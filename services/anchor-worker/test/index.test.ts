@@ -161,3 +161,90 @@ describe("anchorOnce", () => {
     expect(anchored).toBe(1);
   });
 });
+
+describe("anchorOnce — failure reporting", () => {
+  function spyWith(handlers: {
+    pending: unknown[];
+    onReport?: (body: Record<string, unknown>) => void;
+  }) {
+    const reports: Record<string, unknown>[] = [];
+    const fetchSpy = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/batches/pending-anchor")) {
+        return Promise.resolve(pendingResponse(handlers.pending));
+      }
+      if (String(url).endsWith("/anchor-failure")) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        reports.push(body);
+        handlers.onReport?.(body);
+        return Promise.resolve(new Response("{}", { status: 201 }));
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    return { fetchSpy, reports };
+  }
+
+  it("reports a submission error as failed, with the cause", async () => {
+    const { reports } = spyWith({ pending: [pendingBatch] });
+    mocks.anchorBatchRoot.mockRejectedValue(new Error("tx_insufficient_fee"));
+
+    await anchorOnce();
+
+    expect(reports).toEqual([
+      { outcome: "failed", detail: expect.stringContaining("tx_insufficient_fee") },
+    ]);
+  });
+
+  it("presents the worker token when reporting", async () => {
+    const { fetchSpy } = spyWith({ pending: [pendingBatch] });
+    mocks.anchorBatchRoot.mockRejectedValue(new Error("boom"));
+
+    await anchorOnce();
+
+    const [, init] = fetchSpy.mock.calls.find(([url]) =>
+      String(url).endsWith("/anchor-failure"),
+    )!;
+    // Unauthenticated, this endpoint would let anyone park every sealed batch
+    // in maximum backoff and stop anchoring silently.
+    expect((init?.headers as Record<string, string>)["x-anchor-worker-token"]).toBeTruthy();
+  });
+
+  it("truncates a pathological error before sending it", async () => {
+    const { reports } = spyWith({ pending: [pendingBatch] });
+    mocks.anchorBatchRoot.mockRejectedValue(new Error("x".repeat(50_000)));
+
+    await anchorOnce();
+
+    // Trimmed here rather than rejected by the backend: losing the whole
+    // report over a long stack trace would be a poor trade.
+    expect(String(reports[0]!.detail).length).toBe(2_000);
+  });
+
+  it("keeps processing later batches when one fails", async () => {
+    const second = { ...pendingBatch, id: "batch-2" };
+    const { reports } = spyWith({ pending: [pendingBatch, second] });
+    mocks.anchorBatchRoot.mockRejectedValue(new Error("horizon 504"));
+
+    await anchorOnce();
+
+    // One bad batch must not stall the queue behind it — including now that
+    // each failure costs an extra round trip to report.
+    expect(reports).toHaveLength(2);
+  });
+
+  it("does not fail the cycle when the report itself cannot be delivered", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).endsWith("/batches/pending-anchor")) {
+          return Promise.resolve(pendingResponse([pendingBatch]));
+        }
+        return Promise.reject(new Error("backend unreachable"));
+      }),
+    );
+    mocks.anchorBatchRoot.mockRejectedValue(new Error("horizon 504"));
+
+    // Degrades to the old behaviour: the batch stays queued and is retried.
+    await expect(anchorOnce()).resolves.toBe(0);
+  });
+});
