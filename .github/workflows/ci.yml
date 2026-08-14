@@ -24,9 +24,9 @@ jobs:
       ANCHOR_WORKER_TOKEN: ci-test-token
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # Above the ">=20.11" engines floor in the root package.json, not at
           # it: apps/mobile pulls in metro 0.84, which requires ^20.19.4 and
@@ -66,7 +66,7 @@ jobs:
         working-directory: contracts
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -92,7 +92,7 @@ jobs:
 
       # Lets a reviewer download the exact bytecode a commit produces and diff it
       # against what is deployed on testnet.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: proofchain-batch-registry-wasm
           path: contracts/target/wasm32v1-none/release/proofchain_batch_registry.wasm
