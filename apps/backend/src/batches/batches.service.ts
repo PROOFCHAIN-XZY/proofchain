@@ -21,6 +21,7 @@ import {
   BatchEntity,
   CollectionEventEntity,
 } from "../database/entities";
+import { LedgerVerificationService } from "../ledger/ledger-verification.service";
 
 /**
  * Batch lifecycle: open -> sealed -> processed -> sold.
@@ -56,6 +57,7 @@ export class BatchesService {
     private readonly anchors: Repository<AnchorRecordEntity>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    private readonly ledger: LedgerVerificationService,
   ) {}
 
   /**
@@ -341,6 +343,18 @@ export class BatchesService {
     const proof = merkleProof(leaves, index);
     const anchor = await this.anchors.findOne({ where: { batchId } });
 
+    // Read back from Horizon rather than reported from our own row. Until this
+    // existed, the endpoint proved a Merkle path against a root held in our
+    // database and told the caller it was "on chain" — true, but unchecked by
+    // anyone who was not already trusting us.
+    const confirmation = anchor
+      ? await this.ledger.verify({
+          stellarTxHash: anchor.stellarTxHash,
+          merkleRoot: anchor.merkleRoot,
+          dataEntryKey: anchor.dataEntryKey,
+        })
+      : null;
+
     return {
       eventId,
       batchId,
@@ -352,10 +366,10 @@ export class BatchesService {
         ? {
             network: anchor.network,
             txHash: anchor.stellarTxHash,
-            ledger: Number(anchor.stellarLedger),
+            // Horizon's ledger sequence when it answered, ours when it did not.
+            ledger: confirmation?.ledger ?? Number(anchor.stellarLedger),
             explorerUrl: explorerUrl(anchor.network, anchor.stellarTxHash),
-            // Filled in by the worker's ledger read-back; null means "not yet checked here".
-            rootMatchesLedger: null,
+            rootMatchesLedger: confirmation?.rootMatchesLedger ?? null,
           }
         : null,
     };
