@@ -1122,3 +1122,54 @@ describe("BatchesService.anchorHealth", () => {
     expect((await service.anchorHealth()).awaitingAnchor).toBe(0);
   });
 });
+
+describe("BatchesService.anchorAttemptsFor", () => {
+  it("returns the full history, newest first", async () => {
+    const batch = await service.create(seeded.hub.id, "PET");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+
+    await service.recordAnchorFailure(batch.id, { outcome: "failed", detail: "first" });
+    await service.recordAnchorFailure(batch.id, { outcome: "unverified", detail: "second" });
+
+    const history = await service.anchorAttemptsFor(batch.id);
+
+    // Newest first: an operator opening this wants the current failure, not
+    // the archaeology.
+    expect(history.map((a) => a.detail)).toEqual(["second", "first"]);
+  });
+
+  it("survives the batch anchoring", async () => {
+    const batch = await service.create(seeded.hub.id, "PET");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    const root = (await service.seal(batch.id)).merkleRoot!;
+    await service.recordAnchorFailure(batch.id, { outcome: "failed", detail: "horizon 504" });
+    await service.recordAnchor(batch.id, {
+      merkleRoot: root,
+      stellarTxHash: "a".repeat(64),
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${batch.id}`,
+      anchoredAt: "2026-03-01T12:00:00.000Z",
+    });
+
+    // The health view drops this batch on success; this endpoint must not, or
+    // the fact that it took two attempts is lost the moment it stops being a
+    // problem.
+    expect(await service.anchorAttemptsFor(batch.id)).toHaveLength(2);
+  });
+
+  it("returns nothing for a batch that has never been attempted", async () => {
+    const batch = await service.create(seeded.hub.id, "PET");
+
+    expect(await service.anchorAttemptsFor(batch.id)).toEqual([]);
+  });
+
+  it("404s for a batch that does not exist", async () => {
+    await expect(
+      service.anchorAttemptsFor("00000000-0000-0000-0000-000000000000"),
+    ).rejects.toThrow(/not found/);
+  });
+});
