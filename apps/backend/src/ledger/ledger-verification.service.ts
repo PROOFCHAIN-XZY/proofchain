@@ -91,24 +91,57 @@ export class LedgerVerificationService {
       tx.value.memo !== null &&
       base64ToHex(tx.value.memo) === anchor.merkleRoot;
 
-    const confirmation: LedgerConfirmation = {
-      checked: true,
-      rootMatchesLedger: memoMatches,
-      memoMatches,
-      dataEntryMatches: false,
-      ledger: tx.value.ledger || null,
-      checkedAt: new Date().toISOString(),
-      detail: memoMatches
-        ? `memo on ${anchor.stellarTxHash} matches the sealed root`
-        : `memo on ${anchor.stellarTxHash} does not carry the sealed root`,
-    };
+    const dataEntryMatches = await this.dataEntryCarriesRoot(
+      tx.value.sourceAccount,
+      anchor.dataEntryKey,
+      anchor.merkleRoot,
+    );
 
-    if (!memoMatches) {
+    // Either reference is sufficient. Requiring both would make an anchor
+    // stop verifying the moment a later batch overwrote the data entry, which
+    // happens routinely on a single-account deployment.
+    const rootMatchesLedger = memoMatches || dataEntryMatches;
+
+    if (!rootMatchesLedger) {
+      // Loud: the transaction exists and succeeded, but carries a different
+      // root. That is either the wrong tx recorded against this batch or a
+      // forged write-back, and both need a human.
       this.logger.error(
         `ledger disagreement for tx ${anchor.stellarTxHash}: expected root ${anchor.merkleRoot}`,
       );
     }
 
-    return confirmation;
+    return {
+      checked: true,
+      rootMatchesLedger,
+      memoMatches,
+      dataEntryMatches,
+      ledger: tx.value.ledger || null,
+      checkedAt: new Date().toISOString(),
+      detail: rootMatchesLedger
+        ? `ledger confirms the sealed root (memo=${memoMatches}, dataEntry=${dataEntryMatches})`
+        : `transaction ${anchor.stellarTxHash} does not carry the sealed root`,
+    };
+  }
+
+  /**
+   * Corroboration only — never required.
+   *
+   * A failure here is silent because it is not a finding: the account may have
+   * moved on to a later batch's entry, and Horizon may simply be unreachable
+   * for this second call after answering the first.
+   */
+  private async dataEntryCarriesRoot(
+    sourceAccount: string | null,
+    dataEntryKey: string,
+    merkleRoot: string,
+  ): Promise<boolean> {
+    if (!sourceAccount) return false;
+
+    const account = await this.horizon.accountData(sourceAccount);
+    if (!account.ok) return false;
+
+    const value = account.value[dataEntryKey];
+    return typeof value === "string" && base64ToHex(value) === merkleRoot;
   }
 }
