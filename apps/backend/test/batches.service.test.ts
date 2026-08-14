@@ -766,3 +766,79 @@ describe("BatchesService.verifyEvent — ledger read-back", () => {
     expect((await service.verifyEvent(batch.id, event.id)).onChain).toBeNull();
   });
 });
+
+describe("BatchesService.ledgerStatus", () => {
+  function serviceWithLedger(confirmation: Parameters<typeof stubLedgerVerification>[0]) {
+    return new BatchesService(
+      db.dataSource.getRepository(BatchEntity),
+      db.dataSource.getRepository(CollectionEventEntity),
+      db.dataSource.getRepository(AnchorRecordEntity),
+      db.dataSource,
+      stubLedgerVerification(confirmation),
+    );
+  }
+
+  async function anchor(batchId: string): Promise<void> {
+    await service.recordAnchor(batchId, {
+      merkleRoot: (await service.findOne(batchId)).merkleRoot!,
+      stellarTxHash: "a".repeat(64),
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${batchId}`,
+      anchoredAt: "2026-03-01T12:00:00.000Z",
+    });
+  }
+
+  async function seal(): Promise<string> {
+    const batch = await service.create(seeded.hub.id, "PET");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+    return batch.id;
+  }
+
+  it("confirms an anchored batch and links to the explorer", async () => {
+    const batchId = await seal();
+    await anchor(batchId);
+
+    const status = await serviceWithLedger({
+      checked: true,
+      rootMatchesLedger: true,
+      memoMatches: true,
+      ledger: 4033690,
+    }).ledgerStatus(batchId);
+
+    expect(status.anchored).toBe(true);
+    expect(status.confirmation?.rootMatchesLedger).toBe(true);
+    expect(status.onChain?.explorerUrl).toContain("a".repeat(64));
+  });
+
+  it("reports an unanchored batch as unanchored, with nothing to confirm", async () => {
+    const status = await service.ledgerStatus(await seal());
+
+    // Not "unconfirmed": there is no transaction to check, so a confirmation
+    // field of any value would be a claim about something that does not exist.
+    expect(status.anchored).toBe(false);
+    expect(status.confirmation).toBeNull();
+    expect(status.onChain).toBeNull();
+  });
+
+  it("still reports the sealed root when the ledger cannot be reached", async () => {
+    const batchId = await seal();
+    await anchor(batchId);
+
+    const status = await serviceWithLedger({}).ledgerStatus(batchId);
+
+    // Degraded, not broken: the caller still learns the root and the tx hash
+    // and can go check Horizon themselves, which is the whole point.
+    expect(status.confirmation?.rootMatchesLedger).toBeNull();
+    expect(status.merkleRoot).toMatch(/^[0-9a-f]{64}$/);
+    expect(status.onChain?.txHash).toBe("a".repeat(64));
+  });
+
+  it("404s for a batch that does not exist", async () => {
+    await expect(
+      service.ledgerStatus("00000000-0000-0000-0000-000000000000"),
+    ).rejects.toThrow(/not found/);
+  });
+});
