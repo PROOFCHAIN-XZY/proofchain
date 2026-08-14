@@ -21,6 +21,8 @@ import {
   LedgerVerificationService,
   type LedgerConfirmation,
 } from "../ledger/ledger-verification.service";
+import { AnchorAttemptsService } from "./anchor-attempts.service";
+import { isDueForRetry } from "./anchor-backoff";
 
 /**
  * Batch lifecycle: open -> sealed -> processed -> sold.
@@ -58,6 +60,10 @@ export interface PendingAnchorBatch {
   merkleRoot: string;
   totalWeightKg: number;
   eventCount: number;
+  /** How many times anchoring this batch has already been tried and failed. */
+  failedAttempts: number;
+  /** Why the last attempt failed, so the worker's log names the real cause. */
+  lastFailureDetail: string | null;
 }
 
 @Injectable()
@@ -72,6 +78,7 @@ export class BatchesService {
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly ledger: LedgerVerificationService,
+    private readonly attempts: AnchorAttemptsService,
   ) {}
 
   /**
@@ -269,8 +276,15 @@ export class BatchesService {
     return this.findOne(batchId);
   }
 
-  /** Sealed batches with no AnchorRecord yet — the anchor worker's queue. */
-  async pendingAnchor(): Promise<PendingAnchorBatch[]> {
+  /**
+   * Sealed batches with no AnchorRecord yet, minus those still in backoff.
+   *
+   * Filtering here rather than in the worker is deliberate: this query is the
+   * single source of truth about what needs anchoring, and a second worker — or
+   * a restarted one — would otherwise not know a batch had just failed. Holding
+   * the schedule next to the attempt history keeps one answer for everyone.
+   */
+  async pendingAnchor(now = new Date()): Promise<PendingAnchorBatch[]> {
     const rows = await this.batches
       .createQueryBuilder("b")
       .leftJoin(AnchorRecordEntity, "a", "a.batchId = b.id")
@@ -281,12 +295,21 @@ export class BatchesService {
       .select(["b.id", "b.merkleRoot", "b.totalWeightKg", "b.eventCount"])
       .getMany();
 
-    return rows.map((b) => ({
-      id: b.id,
-      merkleRoot: b.merkleRoot!,
-      totalWeightKg: Number(b.totalWeightKg),
-      eventCount: b.eventCount,
-    }));
+    const summaries = await this.attempts.summariesFor(rows.map((b) => b.id));
+
+    return rows
+      .filter((b) => isDueForRetry(summaries.get(b.id), now))
+      .map((b) => {
+        const summary = summaries.get(b.id);
+        return {
+          id: b.id,
+          merkleRoot: b.merkleRoot!,
+          totalWeightKg: Number(b.totalWeightKg),
+          eventCount: b.eventCount,
+          failedAttempts: summary?.failures ?? 0,
+          lastFailureDetail: summary?.lastDetail ?? null,
+        };
+      });
   }
 
   /**

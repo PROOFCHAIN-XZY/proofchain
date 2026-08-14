@@ -8,7 +8,7 @@ import {
 } from "../src/database/entities";
 import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
-import { stubLedgerVerification } from "./support/services";
+import { buildAnchorAttemptsService, stubLedgerVerification } from "./support/services";
 
 /**
  * The batch lifecycle is the hinge of the product: before seal a batch is a
@@ -29,6 +29,7 @@ function buildService(database: TestDatabase): BatchesService {
     dataSource.getRepository(AnchorRecordEntity),
     dataSource,
     stubLedgerVerification(),
+    buildAnchorAttemptsService(dataSource),
   );
 }
 
@@ -704,6 +705,7 @@ describe("BatchesService.verifyEvent — ledger read-back", () => {
       db.dataSource.getRepository(AnchorRecordEntity),
       db.dataSource,
       stubLedgerVerification(confirmation),
+      buildAnchorAttemptsService(db.dataSource),
     );
   }
 
@@ -775,6 +777,7 @@ describe("BatchesService.ledgerStatus", () => {
       db.dataSource.getRepository(AnchorRecordEntity),
       db.dataSource,
       stubLedgerVerification(confirmation),
+      buildAnchorAttemptsService(db.dataSource),
     );
   }
 
