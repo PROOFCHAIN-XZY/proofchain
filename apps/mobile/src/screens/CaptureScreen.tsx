@@ -88,6 +88,7 @@ export function CaptureScreen({ identity, device, onCaptured }: Props) {
         createdAt: new Date().toISOString(),
         syncedAt: null,
         serverEventId: null,
+        photoUploadedAt: null,
       };
       await enqueue(appStore, record);
 

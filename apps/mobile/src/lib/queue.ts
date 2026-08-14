@@ -22,8 +22,15 @@ export interface QueuedWeighIn {
   id: string;
   payload: WeighInPayload;
   signature: string;
-  /** Local file URI of the weigh-in photo; the bytes never leave the device. */
+  /** Local file URI of the weigh-in photo, as returned by the camera. */
   photoUri: string | null;
+  /**
+   * When the server accepted the photo bytes, or null if it has not yet.
+   * Separate from syncedAt because the two succeed independently: the signed
+   * weigh-in is a few hundred bytes and the photo is several megabytes, so on a
+   * field link the record routinely lands first.
+   */
+  photoUploadedAt: string | null;
   status: QueueStatus;
   attempts: number;
   lastError: string | null;
@@ -104,6 +111,25 @@ export async function unsyncedWeightKg(store: KeyValueStore): Promise<number> {
 }
 
 /**
+ * Records whose weigh-in landed but whose photo has not been handed over.
+ *
+ * Invisible to `pending()`, which excludes synced records — so without this a
+ * photo that failed its upload once would never be retried.
+ */
+export async function pendingPhotos(store: KeyValueStore): Promise<QueuedWeighIn[]> {
+  const records = await readAll(store);
+  return records
+    .filter(
+      (r) =>
+        r.status === "synced" &&
+        r.serverEventId !== null &&
+        r.photoUri !== null &&
+        r.photoUploadedAt === null,
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
  * Drop acknowledged records past the retention window to bound storage growth.
  * Rejected records are kept: they are the collector's evidence of work that was
  * refused, and they are the only local trace of why.
@@ -113,7 +139,14 @@ export async function pruneSynced(store: KeyValueStore, olderThanDays = 14): Pro
   const cutoff = Date.now() - olderThanDays * 86_400_000;
 
   const kept = records.filter(
-    (r) => !(r.status === "synced" && new Date(r.createdAt).getTime() < cutoff),
+    (r) =>
+      !(
+        r.status === "synced" &&
+        // A record whose photo has not been sent is not finished, however old:
+        // dropping it discards the only reference to that evidence.
+        !(r.photoUri !== null && r.photoUploadedAt === null) &&
+        new Date(r.createdAt).getTime() < cutoff
+      ),
   );
 
   if (kept.length !== records.length) await writeAll(store, kept);

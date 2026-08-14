@@ -32,6 +32,7 @@ function record(over: Partial<queue.QueuedWeighIn> = {}): queue.QueuedWeighIn {
     createdAt: "2026-08-08T10:00:00.000Z",
     syncedAt: null,
     serverEventId: null,
+    photoUploadedAt: null,
     ...over,
   };
 }
