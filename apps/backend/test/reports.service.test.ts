@@ -1,12 +1,15 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { verifyMerkleProof } from "@proofchain/shared";
 import { BatchesService } from "../src/batches/batches.service";
+import { ReportsService as ReportsServiceCtor } from "../src/reports/reports.service";
 import type { ReportsService } from "../src/reports/reports.service";
 import {
   AnchorRecordEntity,
   BatchEntity,
   CollectionEventEntity,
+  CollectorEntity,
   CustodyTransferEntity,
+  HubEntity,
 } from "../src/database/entities";
 import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
@@ -257,3 +260,58 @@ function parseCsvRow(row: string): string[] {
   fields.push(current);
   return fields;
 }
+
+describe("ReportsService — ledger confirmation", () => {
+  async function anchoredReport(confirmation: Parameters<typeof stubLedgerVerification>[0]) {
+    const batchId = await sealedBatch([7]);
+    await batches.recordAnchor(batchId, {
+      merkleRoot: (await batches.findOne(batchId)).merkleRoot!,
+      stellarTxHash: "a".repeat(64),
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${batchId}`,
+      anchoredAt: "2026-03-01T12:00:00.000Z",
+    });
+
+    const withLedger = new ReportsServiceCtor(
+      db.dataSource.getRepository(BatchEntity),
+      db.dataSource.getRepository(CollectionEventEntity),
+      db.dataSource.getRepository(CustodyTransferEntity),
+      db.dataSource.getRepository(CollectorEntity),
+      db.dataSource.getRepository(HubEntity),
+      db.dataSource.getRepository(AnchorRecordEntity),
+      stubLedgerVerification(confirmation),
+    );
+    return withLedger.buildAuditReport(batchId);
+  }
+
+  it("publishes a confirmed anchor as confirmed", async () => {
+    const report = await anchoredReport({
+      checked: true,
+      rootMatchesLedger: true,
+      memoMatches: true,
+      detail: "ledger confirms the sealed root",
+    });
+
+    expect(report.onChain?.ledgerConfirmation.rootMatchesLedger).toBe(true);
+    expect(report.onChain?.ledgerConfirmation.memoMatches).toBe(true);
+    expect(report.onChain?.ledgerConfirmation.checkedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("keeps a ledger contradiction out of the Merkle proof verdict", async () => {
+    const report = await anchoredReport({ checked: true, rootMatchesLedger: false });
+
+    // allProofsValid is a statement about the document's internal consistency
+    // and is still true. Merging the two would leave a reader unable to tell a
+    // tampered event list from an anchor that never landed.
+    expect(report.proof.allProofsValid).toBe(true);
+    expect(report.onChain?.ledgerConfirmation.rootMatchesLedger).toBe(false);
+  });
+
+  it("reports an unreachable Horizon as unchecked, not as a failed anchor", async () => {
+    const report = await anchoredReport({ detail: "could not reach Horizon: timed out" });
+
+    expect(report.onChain?.ledgerConfirmation.rootMatchesLedger).toBeNull();
+    expect(report.onChain?.ledgerConfirmation.detail).toMatch(/could not reach/);
+  });
+});
