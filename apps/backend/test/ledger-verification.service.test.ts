@@ -163,3 +163,79 @@ describe("LedgerVerificationService — unavailable", () => {
     expect(result.dataEntryMatches).toBe(false);
   });
 });
+
+describe("LedgerVerificationService — caching", () => {
+  function countingService(result: HorizonResult<HorizonTransaction>) {
+    stubRequiredEnv();
+    const transaction = vi.fn(async () => result);
+    const horizon = {
+      transaction,
+      accountData: vi.fn(async () => ({ ok: true as const, value: {} })),
+    } as unknown as HorizonClient;
+    return { service: new LedgerVerificationService(horizon), transaction };
+  }
+
+  it("reads Horizon once for a confirmed anchor", async () => {
+    const { service, transaction } = countingService(tx());
+
+    await service.verify(anchor);
+    await service.verify(anchor);
+    await service.verify(anchor);
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-reads after an unavailable result instead of caching the outage", async () => {
+    const { service, transaction } = countingService({
+      ok: false,
+      reason: "unavailable",
+      detail: "timed out",
+    });
+
+    await service.verify(anchor);
+    await service.verify(anchor);
+
+    // Caching a null would leave the batch permanently unverifiable for the
+    // life of the process, over a blip that lasted one second.
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads after a mismatch, which may be Horizon lagging a fresh anchor", async () => {
+    const { service, transaction } = countingService({
+      ok: false,
+      reason: "not_found",
+      detail: "404",
+    });
+
+    await service.verify(anchor);
+    await service.verify(anchor);
+
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not answer one root's question with another root's result", async () => {
+    const { service, transaction } = countingService(tx());
+
+    const first = await service.verify(anchor);
+    const second = await service.verify({ ...anchor, merkleRoot: OTHER_ROOT });
+
+    // Same transaction, different claim: the cache key has to carry both or a
+    // forged root would inherit a genuine root's confirmation.
+    expect(first.rootMatchesLedger).toBe(true);
+    expect(second.rootMatchesLedger).toBe(false);
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes one Horizon call for simultaneous first-time requests", async () => {
+    const { service, transaction } = countingService(tx());
+
+    const results = await Promise.all([
+      service.verify(anchor),
+      service.verify(anchor),
+      service.verify(anchor),
+    ]);
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(results.every((r) => r.rootMatchesLedger === true)).toBe(true);
+  });
+});
