@@ -679,3 +679,90 @@ describe("BatchesService.verifyEvent", () => {
     await expect(service.verifyEvent(batchId, stranger.id)).rejects.toThrow(/is not in batch/);
   });
 });
+
+describe("BatchesService.verifyEvent — ledger read-back", () => {
+  async function anchoredBatch(): Promise<{ batchId: string; eventId: string }> {
+    const batch = await service.create(seeded.hub.id, "PET");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    const root = (await service.seal(batch.id)).merkleRoot!;
+    await service.recordAnchor(batch.id, {
+      merkleRoot: root,
+      stellarTxHash: "a".repeat(64),
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${batch.id}`,
+      anchoredAt: "2026-03-01T12:00:00.000Z",
+    });
+    return { batchId: batch.id, eventId: event.id };
+  }
+
+  function serviceWithLedger(confirmation: Parameters<typeof stubLedgerVerification>[0]) {
+    return new BatchesService(
+      db.dataSource.getRepository(BatchEntity),
+      db.dataSource.getRepository(CollectionEventEntity),
+      db.dataSource.getRepository(AnchorRecordEntity),
+      db.dataSource,
+      stubLedgerVerification(confirmation),
+    );
+  }
+
+  it("reports a confirmed anchor as true", async () => {
+    const { batchId, eventId } = await anchoredBatch();
+    const withLedger = serviceWithLedger({
+      checked: true,
+      rootMatchesLedger: true,
+      ledger: 4033690,
+    });
+
+    const verification = await withLedger.verifyEvent(batchId, eventId);
+
+    expect(verification.onChain?.rootMatchesLedger).toBe(true);
+  });
+
+  it("reports a contradicted anchor as false", async () => {
+    const { batchId, eventId } = await anchoredBatch();
+    const withLedger = serviceWithLedger({ checked: true, rootMatchesLedger: false });
+
+    const verification = await withLedger.verifyEvent(batchId, eventId);
+
+    // The Merkle proof is still internally valid — the batch's own events do
+    // hash to its stored root. What fails is the claim that the root reached
+    // the ledger, and the two must be reported separately.
+    expect(verification.proofValid).toBe(true);
+    expect(verification.onChain?.rootMatchesLedger).toBe(false);
+  });
+
+  it("reports null when Horizon could not be consulted", async () => {
+    const { batchId, eventId } = await anchoredBatch();
+
+    const verification = await serviceWithLedger({}).verifyEvent(batchId, eventId);
+
+    expect(verification.onChain?.rootMatchesLedger).toBeNull();
+  });
+
+  it("prefers Horizon's ledger sequence over the stored one", async () => {
+    const { batchId, eventId } = await anchoredBatch();
+    const withLedger = serviceWithLedger({
+      checked: true,
+      rootMatchesLedger: true,
+      ledger: 4033999,
+    });
+
+    const verification = await withLedger.verifyEvent(batchId, eventId);
+
+    // If the two disagree, the ledger is right and our row is stale.
+    expect(verification.onChain?.ledger).toBe(4033999);
+  });
+
+  it("omits the on-chain block entirely before anchoring", async () => {
+    const batch = await service.create(seeded.hub.id, "PET");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+
+    // Distinct from an unverified anchor: there is nothing to verify yet, and
+    // saying "unconfirmed" would imply we had tried.
+    expect((await service.verifyEvent(batch.id, event.id)).onChain).toBeNull();
+  });
+});
