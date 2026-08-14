@@ -10,6 +10,7 @@ import { HealthController } from "./health/health.controller";
 import { RootController } from "./health/root.controller";
 import { RegistryModule } from "./collectors/registry.module";
 import { EventsModule } from "./events/events.module";
+import { PhotosModule } from "./photos/photos.module";
 import { BatchesModule } from "./batches/batches.module";
 import { CustodyModule } from "./custody/custody.module";
 import { ReportsModule } from "./reports/reports.module";
@@ -37,6 +38,7 @@ import { RateLimitGuard } from "./common/rate-limit.guard";
     AuthModule,
     RegistryModule,
     EventsModule,
+    PhotosModule,
     BatchesModule,
     CustodyModule,
     ReportsModule,
