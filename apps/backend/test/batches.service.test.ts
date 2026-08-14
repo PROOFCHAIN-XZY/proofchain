@@ -845,3 +845,94 @@ describe("BatchesService.ledgerStatus", () => {
     ).rejects.toThrow(/not found/);
   });
 });
+
+describe("BatchesService.pendingAnchor — backoff", () => {
+  let attempts: ReturnType<typeof buildAnchorAttemptsService>;
+
+  async function sealed(): Promise<string> {
+    const batch = await service.create(seeded.hub.id, "PET");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+    return batch.id;
+  }
+
+  beforeEach(() => {
+    attempts = buildAnchorAttemptsService(db.dataSource);
+  });
+
+  it("offers a never-attempted batch immediately", async () => {
+    await sealed();
+
+    const pending = await service.pendingAnchor();
+
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.failedAttempts).toBe(0);
+  });
+
+  it("withholds a batch that just failed", async () => {
+    const id = await sealed();
+    await attempts.record(id, { outcome: "failed", detail: "horizon 504" });
+
+    // Before backoff existed, this batch came straight back on the next
+    // 15-second poll and did so forever.
+    expect(await service.pendingAnchor()).toHaveLength(0);
+  });
+
+  it("offers it again once the delay has elapsed", async () => {
+    const id = await sealed();
+    await attempts.record(id, { outcome: "failed" });
+
+    const later = new Date(Date.now() + 31_000);
+    const pending = await service.pendingAnchor(later);
+
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.failedAttempts).toBe(1);
+  });
+
+  it("waits longer after each successive failure", async () => {
+    const id = await sealed();
+    await attempts.record(id, { outcome: "failed" });
+    await attempts.record(id, { outcome: "failed" });
+    await attempts.record(id, { outcome: "failed" });
+
+    // Three failures means two minutes, not thirty seconds.
+    expect(await service.pendingAnchor(new Date(Date.now() + 60_000))).toHaveLength(0);
+    expect(await service.pendingAnchor(new Date(Date.now() + 121_000))).toHaveLength(1);
+  });
+
+  it("carries the last failure detail to the worker", async () => {
+    const id = await sealed();
+    await attempts.record(id, {
+      outcome: "failed",
+      detail: "tx_bad_seq: sequence number does not match source account",
+    });
+
+    const pending = await service.pendingAnchor(new Date(Date.now() + 31_000));
+
+    // So the worker's next log line names the real cause rather than
+    // reporting attempt 40 as though it were attempt 1.
+    expect(pending[0]!.lastFailureDetail).toMatch(/tx_bad_seq/);
+  });
+
+  it("does not withhold a batch whose only attempt succeeded", async () => {
+    const id = await sealed();
+    await attempts.record(id, { outcome: "succeeded" });
+
+    // Recording an anchor is what removes a batch from this queue. If a
+    // success also imposed backoff, a bug in the write-back would look like a
+    // quiet stall instead of the loud retry it should be.
+    expect(await service.pendingAnchor()).toHaveLength(1);
+  });
+
+  it("keeps an unfailing batch ahead of a failing one", async () => {
+    const failing = await sealed();
+    await attempts.record(failing, { outcome: "failed" });
+    const fresh = await sealed();
+
+    const pending = await service.pendingAnchor();
+
+    // A single stuck batch must not delay every batch sealed after it.
+    expect(pending.map((b) => b.id)).toEqual([fresh]);
+  });
+});
