@@ -92,7 +92,7 @@ jobs:
 
       # Lets a reviewer download the exact bytecode a commit produces and diff it
       # against what is deployed on testnet.
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: proofchain-batch-registry-wasm
           path: contracts/target/wasm32v1-none/release/proofchain_batch_registry.wasm
