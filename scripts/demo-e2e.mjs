@@ -163,9 +163,20 @@ async function api(path, { method = "GET", token, body } = {}) {
   return data;
 }
 
+/**
+ * Bytes that pass the server's image-signature check.
+ *
+ * A real JPEG header followed by noise: the noise makes every weigh-in's
+ * photoHash distinct, and the header is what stops the upload being refused as
+ * "not a recognised image".
+ */
+function fakeJpeg() {
+  return Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), randomBytes(512)]);
+}
+
 /** A plausible weigh-in, jittered inside the hub geofence. */
 function buildWeighIn(device, index) {
-  const photoBytes = randomBytes(64);
+  const photoBytes = fakeJpeg();
   const jitter = metresToDegrees(hub.geofenceRadiusM * 0.5, hub.lat);
   return {
     schema: "proofchain.weighin.v1",
@@ -181,7 +192,23 @@ function buildWeighIn(device, index) {
     capturedAt: new Date(Date.now() - (index + 1) * 60_000).toISOString(),
     photoHash: createHash("sha256").update(photoBytes).digest("hex"),
     nonce: randomBytes(16).toString("hex"),
+    // Carried alongside rather than inside the payload: the signature covers
+    // the digest, never the bytes.
+    photoBytes,
   };
+}
+
+/** Upload the photo the way a phone does — after the weigh-in is accepted. */
+async function uploadPhoto(eventId, photoBytes) {
+  const res = await fetch(`${BACKEND}/events/${eventId}/photo`, {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: photoBytes,
+  });
+  if (!res.ok) {
+    throw new Error(`photo upload failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  }
+  return res.json();
 }
 
 /** null is "we could not ask", which is not the same as "no". */
@@ -231,10 +258,12 @@ async function main() {
   log("2/8", "Capturing signed weigh-ins from enrolled devices");
   const eventIds = [];
   let submitted = 0;
+  let photosUploaded = 0;
+  const failuresBeforeReport = [];
 
   for (let i = 0; i < 12; i++) {
     const device = seed.devices[i % seed.devices.length];
-    const payload = buildWeighIn(device, i);
+    const { photoBytes, ...payload } = buildWeighIn(device, i);
     const signature = signWeighIn(payload, privateKeyFromPem(device.privateKeyPem));
 
     const result = await api("/events", { method: "POST", body: { payload, signature } });
@@ -244,14 +273,32 @@ async function main() {
       console.log(`  event ${i + 1}: QUARANTINED (${result.integrity.outcome})`);
     } else {
       eventIds.push(result.eventId);
+      // Second request, as a field phone does it: the weigh-in is already safe
+      // on the server before the megabytes are attempted.
+      await uploadPhoto(result.eventId, photoBytes);
+      photosUploaded += 1;
     }
   }
   console.log(`  ${eventIds.length}/${submitted} weigh-ins passed integrity v1`);
+  console.log(`  ${photosUploaded} photos uploaded and hash-checked by the server`);
+
+  // Prove the server refuses a substituted photo. This is the check that makes
+  // the image evidence rather than decoration.
+  const substituteTarget = eventIds[0];
+  const substitution = await fetch(`${BACKEND}/events/${substituteTarget}/photo`, {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: fakeJpeg(),
+  });
+  console.log(
+    `  substituted photo rejected: ${!substitution.ok} (HTTP ${substitution.status})`,
+  );
+  if (substitution.ok) failuresBeforeReport.push("server accepted a photo that was not signed");
 
   log("3/8", "Proving a tampered weigh-in is rejected");
   {
     const device = seed.devices[0];
-    const honest = buildWeighIn(device, 99);
+    const { photoBytes: _unusedPhoto, ...honest } = buildWeighIn(device, 99);
     const signature = signWeighIn(honest, privateKeyFromPem(device.privateKeyPem));
     const inflated = { ...honest, weightKg: 950 }; // signed 8-28 kg, claims 950
 
@@ -351,7 +398,23 @@ async function main() {
   const ledger = await api(`/batches/${batch.id}/ledger`);
   console.log(`  ledger endpoint       : ${describeLedger(ledger.confirmation)}`);
 
-  const failures = [];
+  const failures = [...failuresBeforeReport];
+
+  // Every clean event should carry retrievable, hash-checked photo evidence.
+  const withoutPhotos = report.events.filter((e) => !e.photoAvailable);
+  console.log(
+    `  photo evidence  : ${report.events.length - withoutPhotos.length}/${report.events.length} events`,
+  );
+  if (withoutPhotos.length > 0) failures.push(`${withoutPhotos.length} events have no photo stored`);
+
+  // And the bytes served back must still hash to what the device signed.
+  const photoResponse = await fetch(`${BACKEND}${report.events[0].photoUrl}`);
+  const servedPhoto = Buffer.from(await photoResponse.arrayBuffer());
+  const servedHash = createHash("sha256").update(servedPhoto).digest("hex");
+  console.log(`  photo round-trip: ${servedHash === report.events[0].photoHash}`);
+  if (servedHash !== report.events[0].photoHash) {
+    failures.push("served photo does not hash to the signed photoHash");
+  }
   if (!report.proof.rootMatchesSealedValue) failures.push("recomputed root != sealed root");
   if (!report.proof.allProofsValid) failures.push("some Merkle proofs invalid");
   if (!independent) failures.push("independent proof check failed");
