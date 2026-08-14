@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's result irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node (build, typecheck, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # The anchor worker refuses to run without this rather than silently
+      # posting write-backs the backend would reject, so its tests need a value
+      # present. Nothing here talks to a real backend; the value is arbitrary.
+      ANCHOR_WORKER_TOKEN: ci-test-token
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the ">=20.11" engines constraint in the root package.json.
+          node-version: "20.11"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Must precede typecheck: every workspace imports @proofchain/shared, and
+      # tsc resolves it through the package's built .d.ts files rather than its
+      # source. Without this, the backend alone fails with 8 TS2307s plus a
+      # cascade of implicit-any errors that are really just the missing types.
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+  contracts:
+    name: Soroban contract (clippy, test, wasm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: contracts
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # NOT wasm32-unknown-unknown: Rust 1.82+ enables reference-types and
+          # multi-value on that target, which the Soroban environment rejects.
+          # See contracts/README.md.
+          targets: wasm32v1-none
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Build wasm
+        run: cargo build --target wasm32v1-none --release
+
+      # Lets a reviewer download the exact bytecode a commit produces and diff it
+      # against what is deployed on testnet.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proofchain-batch-registry-wasm
+          path: contracts/target/wasm32v1-none/release/proofchain_batch_registry.wasm
+          if-no-files-found: error
