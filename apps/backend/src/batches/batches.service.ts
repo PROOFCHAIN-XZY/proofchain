@@ -16,7 +16,12 @@ import {
   type MaterialType,
   type StellarNetwork,
 } from "@proofchain/shared";
-import { AnchorRecordEntity, BatchEntity, CollectionEventEntity } from "../database/entities";
+import {
+  AnchorAttemptEntity,
+  AnchorRecordEntity,
+  BatchEntity,
+  CollectionEventEntity,
+} from "../database/entities";
 import {
   LedgerVerificationService,
   type LedgerConfirmation,
@@ -341,6 +346,9 @@ export class BatchesService {
     const existing = await this.anchors.findOne({ where: { batchId } });
     if (existing) {
       // Idempotent for a worker retry of the same transaction; loud otherwise.
+      // No attempt is recorded here: the successful one was already written
+      // when this anchor first landed, and a retry of the write-back is not a
+      // second attempt at anchoring.
       if (existing.stellarTxHash === input.stellarTxHash) return existing;
       throw new ConflictException(
         `batch ${batchId} is already anchored by tx ${existing.stellarTxHash}`,
@@ -356,7 +364,48 @@ export class BatchesService {
       dataEntryKey: input.dataEntryKey,
       anchoredAt: new Date(input.anchoredAt),
     });
-    return this.anchors.save(anchor);
+    const saved = await this.anchors.save(anchor);
+
+    // Closes the history. Without this a batch that failed five times and then
+    // anchored would read, forever, as a batch that failed five times.
+    await this.attempts.record(batchId, {
+      outcome: "succeeded",
+      stellarTxHash: input.stellarTxHash,
+      detail: `anchored in ledger ${input.stellarLedger}`,
+    });
+
+    return saved;
+  }
+
+  /**
+   * Record an attempt that did not produce an anchor.
+   *
+   * Called by the worker, which is the only party that knows why a submission
+   * failed. It cannot be inferred here: from the backend's side a failed anchor
+   * and a worker that was never started look identical — the batch simply stays
+   * in the queue, which is precisely the ambiguity this removes.
+   */
+  async recordAnchorFailure(
+    batchId: string,
+    input: { outcome: "failed" | "unverified"; detail?: string; stellarTxHash?: string },
+  ): Promise<AnchorAttemptEntity> {
+    const batch = await this.findOne(batchId);
+
+    if (batch.status === "open" || !batch.merkleRoot) {
+      throw new ConflictException("cannot record an anchor attempt for an unsealed batch");
+    }
+
+    const anchored = await this.anchors.findOne({ where: { batchId } });
+    if (anchored) {
+      // A failure reported against an already-anchored batch is a stale worker
+      // or a duplicate report. Recording it would make a healthy batch look
+      // broken on the operator view.
+      throw new ConflictException(
+        `batch ${batchId} is already anchored by tx ${anchored.stellarTxHash}`,
+      );
+    }
+
+    return this.attempts.record(batchId, input);
   }
 
   /**
