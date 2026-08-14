@@ -1,16 +1,23 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { verifyMerkleProof } from "@proofchain/shared";
 import { BatchesService } from "../src/batches/batches.service";
+import { ReportsService as ReportsServiceCtor } from "../src/reports/reports.service";
 import type { ReportsService } from "../src/reports/reports.service";
 import {
   AnchorRecordEntity,
   BatchEntity,
   CollectionEventEntity,
+  CollectorEntity,
   CustodyTransferEntity,
+  HubEntity,
 } from "../src/database/entities";
 import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
-import { buildReportsService } from "./support/services";
+import {
+  buildAnchorAttemptsService,
+  buildReportsService,
+  stubLedgerVerification,
+} from "./support/services";
 
 /**
  * The audit artifact IS the product: everything else exists to be able to
@@ -32,6 +39,8 @@ beforeEach(async () => {
     db.dataSource.getRepository(CollectionEventEntity),
     db.dataSource.getRepository(AnchorRecordEntity),
     db.dataSource,
+    stubLedgerVerification(),
+    buildAnchorAttemptsService(db.dataSource),
   );
   seeded = await seedHub(db.dataSource);
 });
@@ -256,3 +265,117 @@ function parseCsvRow(row: string): string[] {
   fields.push(current);
   return fields;
 }
+
+describe("ReportsService — ledger confirmation", () => {
+  async function anchoredReport(confirmation: Parameters<typeof stubLedgerVerification>[0]) {
+    const batchId = await sealedBatch([7]);
+    await batches.recordAnchor(batchId, {
+      merkleRoot: (await batches.findOne(batchId)).merkleRoot!,
+      stellarTxHash: "a".repeat(64),
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${batchId}`,
+      anchoredAt: "2026-03-01T12:00:00.000Z",
+    });
+
+    const withLedger = new ReportsServiceCtor(
+      db.dataSource.getRepository(BatchEntity),
+      db.dataSource.getRepository(CollectionEventEntity),
+      db.dataSource.getRepository(CustodyTransferEntity),
+      db.dataSource.getRepository(CollectorEntity),
+      db.dataSource.getRepository(HubEntity),
+      db.dataSource.getRepository(AnchorRecordEntity),
+      stubLedgerVerification(confirmation),
+    );
+    return withLedger.buildAuditReport(batchId);
+  }
+
+  it("publishes a confirmed anchor as confirmed", async () => {
+    const report = await anchoredReport({
+      checked: true,
+      rootMatchesLedger: true,
+      memoMatches: true,
+      detail: "ledger confirms the sealed root",
+    });
+
+    expect(report.onChain?.ledgerConfirmation.rootMatchesLedger).toBe(true);
+    expect(report.onChain?.ledgerConfirmation.memoMatches).toBe(true);
+    expect(report.onChain?.ledgerConfirmation.checkedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("keeps a ledger contradiction out of the Merkle proof verdict", async () => {
+    const report = await anchoredReport({ checked: true, rootMatchesLedger: false });
+
+    // allProofsValid is a statement about the document's internal consistency
+    // and is still true. Merging the two would leave a reader unable to tell a
+    // tampered event list from an anchor that never landed.
+    expect(report.proof.allProofsValid).toBe(true);
+    expect(report.onChain?.ledgerConfirmation.rootMatchesLedger).toBe(false);
+  });
+
+  it("reports an unreachable Horizon as unchecked, not as a failed anchor", async () => {
+    const report = await anchoredReport({ detail: "could not reach Horizon: timed out" });
+
+    expect(report.onChain?.ledgerConfirmation.rootMatchesLedger).toBeNull();
+    expect(report.onChain?.ledgerConfirmation.detail).toMatch(/could not reach/);
+  });
+});
+
+describe("ReportsService — photo evidence", () => {
+  it("marks an event with no uploaded photo as unavailable", async () => {
+    const report = await reports.buildAuditReport(await sealedBatch([4]));
+
+    // The digest is still published: an auditor holding the original photo
+    // can verify it even when we do not hold the bytes.
+    expect(report.events[0]!.photoHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(report.events[0]!.photoAvailable).toBe(false);
+    expect(report.events[0]!.photoUrl).toBeNull();
+  });
+
+  it("links to the photo once the bytes are stored", async () => {
+    const batchId = await sealedBatch([4]);
+    const [event] = await batches.eventsOf(batchId);
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .update({ id: event!.id }, { photoUri: "ab/cd/abcd.bin" });
+
+    const report = await reports.buildAuditReport(batchId);
+
+    expect(report.events[0]!.photoAvailable).toBe(true);
+    // Relative: the report must resolve from whatever host served it.
+    expect(report.events[0]!.photoUrl).toBe(`/events/${event!.id}/photo`);
+  });
+
+  it("tells the reader how to check the photo themselves", async () => {
+    const report = await reports.buildAuditReport(await sealedBatch([1]));
+
+    expect(report.attestationNotes.join(" ")).toMatch(/recompute the sha256/i);
+  });
+});
+
+describe("ReportsService.buildEventCsv — photo column", () => {
+  it("carries the photo URL alongside the digest", async () => {
+    const batchId = await sealedBatch([2]);
+    const [event] = await batches.eventsOf(batchId);
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .update({ id: event!.id }, { photoUri: "ab/cd/abcd.bin" });
+
+    const csv = await reports.buildEventCsv(batchId);
+    const [header, row] = csv.split("\r\n");
+
+    const columns = header!.split(",");
+    expect(columns).toContain("photo_url");
+    expect(parseCsvRow(row!)[columns.indexOf("photo_url")]).toBe(`/events/${event!.id}/photo`);
+  });
+
+  it("keeps the column count fixed when there is no photo", async () => {
+    const csv = await reports.buildEventCsv(await sealedBatch([2]));
+    const [header, row] = csv.split("\r\n");
+
+    // An empty cell, not a missing one: ragged rows silently misalign every
+    // later field in whatever spreadsheet the verifier opens this in.
+    expect(parseCsvRow(row!)).toHaveLength(header!.split(",").length);
+    expect(parseCsvRow(row!)[header!.split(",").indexOf("photo_url")]).toBe("");
+  });
+});

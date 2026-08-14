@@ -24,6 +24,7 @@ export interface SyncOutcome {
   synced: number;
   rejected: number;
   failed: number;
+  photosUploaded: number;
 }
 
 const BACKEND_KEY = "proofchain.backendUrl";
@@ -75,6 +76,43 @@ export async function postWeighIn(
   return (await res.json()) as IngestResponse;
 }
 
+/**
+ * Send the photo bytes for an accepted weigh-in.
+ *
+ * React Native's fetch streams a { uri } form part straight off disk, so a
+ * multi-megabyte photo never has to be read into JS memory — which on a low-end
+ * field phone is the difference between an upload and an out-of-memory crash.
+ *
+ * The server accepts these bytes only if they hash to the photoHash already
+ * signed into the payload, so this needs no credential and a corrupted transfer
+ * is rejected rather than stored.
+ */
+export async function uploadPhoto(
+  backendUrl: string,
+  eventId: string,
+  photoUri: string,
+): Promise<void> {
+  const controller = new AbortController();
+  // Far longer than the weigh-in timeout: megabytes over a link that may barely
+  // work, where giving up early means re-sending everything already transferred.
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+
+  try {
+    const body = await fetch(photoUri).then((r) => r.blob());
+    const res = await fetch(`${backendUrl}/events/${eventId}/photo`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`photo upload failed (${res.status})`);
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function failureSummary(response: IngestResponse): string {
   return response.integrity.findings
     .filter((f) => f.outcome === "fail")
@@ -95,15 +133,34 @@ export async function syncPending(
   deps: {
     isOnline: () => Promise<boolean>;
     post?: (backendUrl: string, record: QueuedWeighIn) => Promise<IngestResponse>;
+    sendPhoto?: (backendUrl: string, eventId: string, photoUri: string) => Promise<void>;
   },
 ): Promise<SyncOutcome> {
-  const outcome: SyncOutcome = { attempted: 0, synced: 0, rejected: 0, failed: 0 };
+  const outcome: SyncOutcome = {
+    attempted: 0,
+    synced: 0,
+    rejected: 0,
+    failed: 0,
+    photosUploaded: 0,
+  };
 
   if (!(await deps.isOnline())) return outcome;
 
   const backendUrl = await getBackendUrl(store);
   const post = deps.post ?? ((url, record) => postWeighIn(url, record));
+  const sendPhoto = deps.sendPhoto ?? uploadPhoto;
   const records = await queue.pending(store);
+
+  /** Never throws: a failed photo must not undo an accepted weigh-in. */
+  const tryPhoto = async (photoUri: string | null, eventId: string): Promise<boolean> => {
+    if (!photoUri) return false;
+    try {
+      await sendPhoto(backendUrl, eventId, photoUri);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   for (const record of records) {
     outcome.attempted += 1;
@@ -123,13 +180,20 @@ export async function syncPending(
         continue;
       }
 
+      // Attempted only after the weigh-in is safely on the server. The record
+      // is marked synced either way: a missing photo is weaker evidence, not a
+      // lost tonne.
+      const photoUploaded = await tryPhoto(record.photoUri, response.eventId);
+
       await queue.update(store, record.id, {
         status: "synced",
         serverEventId: response.eventId,
         syncedAt: new Date().toISOString(),
-        lastError: null,
+        photoUploadedAt: photoUploaded ? new Date().toISOString() : null,
+        lastError: photoUploaded ? null : "weigh-in synced; photo upload still pending",
       });
       outcome.synced += 1;
+      if (photoUploaded) outcome.photosUploaded += 1;
     } catch (error) {
       // Back to `queued`, never dropped: the next pass will try again.
       await queue.update(store, record.id, {
@@ -138,6 +202,18 @@ export async function syncPending(
         lastError: (error as Error).message,
       });
       outcome.failed += 1;
+    }
+  }
+
+  // Second pass: photos whose weigh-in landed on an earlier sync. These are
+  // invisible to pending(), so without this they are never retried.
+  for (const record of await queue.pendingPhotos(store)) {
+    if (await tryPhoto(record.photoUri, record.serverEventId!)) {
+      await queue.update(store, record.id, {
+        photoUploadedAt: new Date().toISOString(),
+        lastError: null,
+      });
+      outcome.photosUploaded += 1;
     }
   }
 

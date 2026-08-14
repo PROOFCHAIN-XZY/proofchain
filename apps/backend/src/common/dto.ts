@@ -19,7 +19,12 @@ import {
   MinLength,
   ValidateNested,
 } from "class-validator";
-import { BATCH_STATUSES, MATERIAL_TYPES, type BatchStatus, type MaterialType } from "@proofchain/shared";
+import {
+  BATCH_STATUSES,
+  MATERIAL_TYPES,
+  type BatchStatus,
+  type MaterialType,
+} from "@proofchain/shared";
 
 /**
  * Validation at the system boundary. Everything crossing into the backend is
@@ -147,6 +152,26 @@ export class RecordAnchorDto {
   @IsISO8601({ strict: true }) anchoredAt: string;
 }
 
+/**
+ * The worker reporting an attempt that produced no anchor.
+ *
+ * `detail` is free text on purpose — it is whatever Horizon or the SDK said,
+ * and an operator debugging a stuck batch needs the real message rather than a
+ * code we mapped it onto and lost the specifics of. Bounded, because it reaches
+ * us from a network failure path where the message length is not ours to
+ * control.
+ */
+export class RecordAnchorFailureDto {
+  @IsIn(["failed", "unverified"]) outcome: "failed" | "unverified";
+
+  @IsOptional() @IsString() @MaxLength(2000) detail?: string;
+
+  /** Present for `unverified`: the submission that may have cost a real fee. */
+  @IsOptional()
+  @Matches(/^[0-9a-f]{64}$/, { message: "stellarTxHash must be a 64-char hex hash" })
+  stellarTxHash?: string;
+}
+
 export class CreateCustodyTransferDto {
   @IsString() @IsNotEmpty() @MaxLength(200) fromParty: string;
   @IsString() @IsNotEmpty() @MaxLength(200) toParty: string;
@@ -171,6 +196,16 @@ export class ListEventsQueryDto {
 
   @IsOptional() @IsBoolean() @Type(() => Boolean) batched?: boolean;
   @IsOptional() @IsBoolean() @Type(() => Boolean) quarantined?: boolean;
+
+  /**
+   * Filter on whether the photo bytes have been received.
+   *
+   * The operator-facing question this answers is "which weigh-ins are still
+   * missing their evidence, and whose phone are they on" — worth asking before
+   * a batch is sealed, because after sealing the membership is frozen and the
+   * photo can only ever be attached to a record already sold.
+   */
+  @IsOptional() @IsBoolean() @Type(() => Boolean) hasPhoto?: boolean;
 
   @IsOptional() @IsNumber() @Min(1) @Max(500) @Type(() => Number) limit?: number;
 }

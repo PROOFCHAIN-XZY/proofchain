@@ -1,7 +1,13 @@
 import type { DataSource } from "typeorm";
 import { EventsService } from "../../src/events/events.service";
+import type {
+  LedgerConfirmation,
+  LedgerVerificationService,
+} from "../../src/ledger/ledger-verification.service";
+import { AnchorAttemptsService } from "../../src/batches/anchor-attempts.service";
 import { ReportsService } from "../../src/reports/reports.service";
 import {
+  AnchorAttemptEntity,
   AnchorRecordEntity,
   CollectionEventEntity,
   CollectorEntity,
@@ -51,5 +57,44 @@ export function buildReportsService(dataSource: DataSource): ReportsService {
     dataSource.getRepository(CollectorEntity),
     dataSource.getRepository(HubEntity),
     dataSource.getRepository(AnchorRecordEntity),
+    stubLedgerVerification(),
   );
+}
+
+/**
+ * A ledger verifier that never consults Horizon.
+ *
+ * The batch and report suites are about Merkle structure and SQL, and should
+ * not gain a network dependency to exercise either. Suites that are actually
+ * about ledger read-back drive LedgerVerificationService directly.
+ *
+ * Defaults to the unchecked answer rather than a confirming one, so a test that
+ * cares about confirmation has to say so.
+ */
+export function stubLedgerVerification(
+  confirmation: Partial<LedgerConfirmation> = {},
+): LedgerVerificationService {
+  const answer: LedgerConfirmation = {
+    checked: false,
+    rootMatchesLedger: null,
+    memoMatches: false,
+    dataEntryMatches: false,
+    ledger: null,
+    checkedAt: new Date().toISOString(),
+    detail: "ledger read-back stubbed out in tests",
+    ...confirmation,
+  };
+  return { verify: async () => answer } as unknown as LedgerVerificationService;
+}
+
+/**
+ * Attempt recording backed by the test database.
+ *
+ * Not a stub: the batch suite's backoff assertions depend on real rows, and a
+ * fake would make the queue-filtering tests assert on the fake's arithmetic
+ * rather than on the service's.
+ */
+export function buildAnchorAttemptsService(dataSource: DataSource): AnchorAttemptsService {
+  stubRequiredEnv();
+  return new AnchorAttemptsService(dataSource.getRepository(AnchorAttemptEntity), dataSource);
 }

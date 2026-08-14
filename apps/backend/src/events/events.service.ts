@@ -174,6 +174,7 @@ export class EventsService {
     collectorId?: string;
     batched?: boolean;
     quarantined?: boolean;
+    hasPhoto?: boolean;
     limit?: number;
   }): Promise<CollectionEventEntity[]> {
     const qb = this.events.createQueryBuilder("e").orderBy("e.capturedAt", "DESC");
@@ -187,6 +188,11 @@ export class EventsService {
     }
     if (filter.batched === true) qb.andWhere("e.batchId IS NOT NULL");
     if (filter.batched === false) qb.andWhere("e.batchId IS NULL");
+
+    // photoUri is only written once bytes matching the signed hash have been
+    // stored, so its nullness is exactly "the evidence has not arrived".
+    if (filter.hasPhoto === true) qb.andWhere("e.photoUri IS NOT NULL");
+    if (filter.hasPhoto === false) qb.andWhere("e.photoUri IS NULL");
 
     return qb.take(Math.min(filter.limit ?? 100, 500)).getMany();
   }

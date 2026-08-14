@@ -1,5 +1,6 @@
+import { Fragment } from "react";
 import Link from "next/link";
-import { api, ApiError, kg } from "@/lib/api";
+import { api, ApiError, kg, type AnchorHealth } from "@/lib/api";
 import { batchTone, formatDateTime, formatKg, shortHash } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +10,8 @@ export default async function BatchesPage() {
   try {
     batches = await api.listBatches();
   } catch (error) {
-    const unauthorised = error instanceof ApiError && (error.status === 401 || error.status === 403);
+    const unauthorised =
+      error instanceof ApiError && (error.status === 401 || error.status === 403);
     return (
       <main>
         <div className="page-head">
@@ -29,6 +31,17 @@ export default async function BatchesPage() {
         </p>
       </main>
     );
+  }
+
+  // A failing anchor pipeline is the one problem on this page that nobody
+  // discovers by looking at it: a stuck batch and a freshly sealed one both
+  // read as "awaiting anchor" in the table below. Fetched separately so a
+  // failure here degrades the banner rather than the page.
+  let health: AnchorHealth | null = null;
+  try {
+    health = await api.anchorHealth();
+  } catch {
+    health = null;
   }
 
   const anchored = batches.filter((b) => b.anchor).length;
@@ -70,6 +83,35 @@ export default async function BatchesPage() {
           <dd>{(totalKg / 1000).toFixed(4)}</dd>
         </div>
       </dl>
+
+      {health && health.stuck > 0 && (
+        <div className="proof" data-state="broken">
+          <h3>
+            {health.stuck} batch{health.stuck === 1 ? "" : "es"} cannot be anchored
+          </h3>
+          <dl>
+            {health.batches
+              .filter((b) => b.stuck)
+              .map((b) => (
+                <Fragment key={b.batchId}>
+                  <dt>
+                    <Link href={`/batches/${b.batchId}`} className="hash">
+                      {b.batchId.slice(0, 8)}
+                    </Link>
+                  </dt>
+                  <dd>
+                    {b.failedAttempts} failed attempt{b.failedAttempts === 1 ? "" : "s"} ·{" "}
+                    {b.lastDetail ?? "no detail recorded"}
+                  </dd>
+                </Fragment>
+              ))}
+          </dl>
+          <p className="note">
+            These batches are sealed and their weight cannot be sold until a root reaches the
+            ledger. See the runbook for the usual causes.
+          </p>
+        </div>
+      )}
 
       <h2>All batches</h2>
 

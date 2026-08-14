@@ -17,6 +17,7 @@ import {
   HubEntity,
 } from "../database/entities";
 import { explorerUrl } from "../batches/batches.service";
+import { LedgerVerificationService } from "../ledger/ledger-verification.service";
 
 /**
  * The audit artifact — the document a PRO, verifier or credit buyer accepts as
@@ -39,6 +40,14 @@ export interface AuditReportEvent {
   capturedAt: string;
   receivedAt: string;
   photoHash: string;
+  /** True once bytes matching photoHash have been uploaded and stored. */
+  photoAvailable: boolean;
+  /**
+   * Where to fetch those bytes. Relative on purpose: the report is served from
+   * whatever host the reader reached us on, and baking an absolute URL in would
+   * hand a buyer a link that only resolves on our own network.
+   */
+  photoUrl: string | null;
   payloadHash: string;
   leaf: string;
   merkleProof: MerkleProofStep[];
@@ -96,6 +105,21 @@ export interface AuditReport {
     dataEntryKey: string;
     anchoredAt: string;
     explorerUrl: string;
+    /**
+     * What the ledger said when we last asked, rather than what our database
+     * remembers writing. The report's other proof fields are all recomputed
+     * from data in the document; this is the one claim that cannot be, so it
+     * carries its own freshness and its own tri-state.
+     *
+     * null means we could not reach Horizon — not that the anchor failed.
+     */
+    ledgerConfirmation: {
+      rootMatchesLedger: boolean | null;
+      memoMatches: boolean;
+      dataEntryMatches: boolean;
+      checkedAt: string;
+      detail: string;
+    };
   } | null;
   events: AuditReportEvent[];
   /**
@@ -117,6 +141,7 @@ export class ReportsService {
     @InjectRepository(HubEntity) private readonly hubs: Repository<HubEntity>,
     @InjectRepository(AnchorRecordEntity)
     private readonly anchors: Repository<AnchorRecordEntity>,
+    private readonly ledger: LedgerVerificationService,
   ) {}
 
   async buildAuditReport(batchId: string): Promise<AuditReport> {
@@ -146,6 +171,17 @@ export class ReportsService {
       this.anchors.findOne({ where: { batchId } }),
     ]);
 
+    // Asked at render time, not read from our own row. A report is often the
+    // only artifact a buyer keeps, and the whole document is worth less if its
+    // one external claim is the one thing nobody rechecked.
+    const confirmation = anchor
+      ? await this.ledger.verify({
+          stellarTxHash: anchor.stellarTxHash,
+          merkleRoot: anchor.merkleRoot,
+          dataEntryKey: anchor.dataEntryKey,
+        })
+      : null;
+
     const collectorIds = [...new Set(events.map((e) => e.collectorId))];
     const collectorRows = collectorIds.length
       ? await this.collectors.findByIds(collectorIds)
@@ -168,6 +204,8 @@ export class ReportsService {
         capturedAt: e.capturedAt.toISOString(),
         receivedAt: e.receivedAt.toISOString(),
         photoHash: e.photoHash,
+        photoAvailable: e.photoUri !== null,
+        photoUrl: e.photoUri === null ? null : `/events/${e.id}/photo`,
         payloadHash: e.payloadHash,
         leaf: leaves[index]!,
         merkleProof: proof,
@@ -256,12 +294,20 @@ export class ReportsService {
             dataEntryKey: anchor.dataEntryKey,
             anchoredAt: anchor.anchoredAt.toISOString(),
             explorerUrl: explorerUrl(anchor.network, anchor.stellarTxHash),
+            ledgerConfirmation: {
+              rootMatchesLedger: confirmation?.rootMatchesLedger ?? null,
+              memoMatches: confirmation?.memoMatches ?? false,
+              dataEntryMatches: confirmation?.dataEntryMatches ?? false,
+              checkedAt: confirmation?.checkedAt ?? new Date().toISOString(),
+              detail: confirmation?.detail ?? "ledger not consulted",
+            },
           }
         : null,
       events: reportEvents,
       attestationNotes: [
         "The Stellar anchor proves these records existed unaltered at the anchored ledger time. It does not, by itself, prove the material weighed was real or additional.",
         "Source-level assurance comes from device signatures, hub geofencing, photo evidence and duplicate detection, recorded per event above.",
+      "Each event's photoHash was signed by the capture device. Where photoAvailable is true, the stored bytes have been checked to hash to that value; download the photo and recompute the sha256 to confirm it independently.",
         "Baseline and additionality figures must be completed against the selected Verra Plastic Waste Reduction Standard track before submission.",
       ],
     };
@@ -282,6 +328,7 @@ export class ReportsService {
       "lat",
       "lng",
       "photo_sha256",
+      "photo_url",
       "payload_sha256",
       "merkle_leaf",
       "integrity",
@@ -299,6 +346,9 @@ export class ReportsService {
         e.lat.toFixed(6),
         e.lng.toFixed(6),
         e.photoHash,
+        // Empty rather than absent so the column count stays fixed: a
+        // spreadsheet with ragged rows silently misaligns every later field.
+        e.photoUrl ?? "",
         e.payloadHash,
         e.leaf,
         e.integrityOutcome,
