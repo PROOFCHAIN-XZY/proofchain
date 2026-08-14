@@ -66,6 +66,9 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         ? "verified"
         : "pending";
 
+  // The photo URLs in the report are relative to the backend, not to the
+  // dashboard, so they need the same origin the download links use.
+  const backendOrigin = process.env.NEXT_PUBLIC_BACKEND_URL ?? BACKEND_URL;
   const csvHref = `${process.env.NEXT_PUBLIC_BACKEND_URL ?? BACKEND_URL}/batches/${id}/report/events.csv`;
   const jsonHref = `${process.env.NEXT_PUBLIC_BACKEND_URL ?? BACKEND_URL}/batches/${id}/report`;
 
@@ -331,6 +334,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
               <th>Collector</th>
               <th className="num">Weight</th>
               <th>Location</th>
+              <th>Photo</th>
               <th>Photo sha256</th>
               <th>Merkle leaf</th>
               <th>Integrity</th>
@@ -345,6 +349,25 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
                 <td className="num">{formatKg(e.weightKg)} kg</td>
                 <td className="hash">
                   {e.lat.toFixed(6)}, {e.lng.toFixed(6)}
+                </td>
+                <td>
+                  {/*
+                    The photo is the only part of a weigh-in a human can judge
+                    directly — everything else on this row is a hash or a
+                    number. Linked rather than inlined so the print layout of a
+                    hundred-event batch stays usable.
+                  */}
+                  {e.photoAvailable && e.photoUrl ? (
+                    <a
+                      href={`${backendOrigin}${e.photoUrl}`}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                    >
+                      view
+                    </a>
+                  ) : (
+                    <span title="hash signed at capture; bytes not uploaded">not uploaded</span>
+                  )}
                 </td>
                 <td className="hash">{shortHash(e.photoHash, 8)}</td>
                 <td className="hash">{shortHash(e.leaf, 8)}</td>

@@ -153,6 +153,9 @@ export interface AuditReport {
     lng: number;
     capturedAt: string;
     photoHash: string;
+    photoAvailable: boolean;
+    /** Relative to the backend origin; null until the bytes are uploaded. */
+    photoUrl: string | null;
     payloadHash: string;
     leaf: string;
     integrityOutcome: string;
