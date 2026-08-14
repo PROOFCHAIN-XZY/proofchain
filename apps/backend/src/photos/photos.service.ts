@@ -9,6 +9,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { CollectionEventEntity } from "../database/entities";
 import { loadConfig } from "../config/configuration";
+import { detectImageType, type ImageType } from "./image-type";
 import { PhotoStore } from "./photo-store";
 
 /**
@@ -33,6 +34,7 @@ export interface PhotoAttachment {
   eventId: string;
   sha256: string;
   bytes: number;
+  contentType: ImageType;
   /** True when this exact photo was already on file. */
   alreadyStored: boolean;
 }
@@ -61,6 +63,16 @@ export class PhotosService {
     const event = await this.events.findOne({ where: { id: eventId } });
     if (!event) throw new NotFoundException(`event ${eventId} not found`);
 
+    // Checked before the hash comparison so the rejection says which rule was
+    // broken: "not an image" and "wrong image" need different responses from
+    // the phone — one is a bug in the capture app, the other is corruption.
+    const contentType = detectImageType(bytes);
+    if (!contentType) {
+      throw new BadRequestException(
+        "photo body is not a recognised image (jpeg, png, webp or heic)",
+      );
+    }
+
     const sha256 = PhotoStore.sha256Of(bytes);
 
     // The check that makes the photo evidence rather than decoration. The
@@ -81,6 +93,6 @@ export class PhotosService {
 
     await this.events.update({ id: eventId }, { photoUri: stored.relativePath });
 
-    return { eventId, sha256, bytes: stored.bytes, alreadyStored };
+    return { eventId, sha256, bytes: stored.bytes, contentType, alreadyStored };
   }
 }

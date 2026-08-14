@@ -23,8 +23,13 @@ let root: string;
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
 const JPEG_SHA = PhotoStore.sha256Of(JPEG);
+/** A different, equally valid image — the realistic substitution. */
+const OTHER_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x20, 0x45, 0x78, 0x69, 0x66]);
 
 beforeEach(async () => {
+  // The service reads its ceiling at construction, so a test that lowers it
+  // would otherwise leak that ceiling into every test built afterwards.
+  delete process.env.MAX_PHOTO_BYTES;
   stubRequiredEnv();
   db ??= await createTestDatabase();
   await db.reset();
@@ -61,7 +66,7 @@ describe("PhotosService.attach", () => {
 
   it("rejects bytes that do not hash to the signed photoHash", async () => {
     const event = await insertEvent(db.dataSource, seeded, { photoHash: JPEG_SHA });
-    const substitute = Buffer.from("a completely different image");
+    const substitute = OTHER_JPEG;
 
     // The substitution a fraudulent credit needs: a real signed weigh-in, with
     // a photo of something else attached to it afterwards.
@@ -73,13 +78,13 @@ describe("PhotosService.attach", () => {
   it("leaves the event untouched when the bytes are rejected", async () => {
     const event = await insertEvent(db.dataSource, seeded, { photoHash: JPEG_SHA });
 
-    await expect(service.attach(event.id, Buffer.from("wrong"))).rejects.toThrow();
+    await expect(service.attach(event.id, OTHER_JPEG)).rejects.toThrow();
 
     const reloaded = await db.dataSource
       .getRepository(CollectionEventEntity)
       .findOneByOrFail({ id: event.id });
     expect(reloaded.photoUri).toBeNull();
-    expect(await store.has(PhotoStore.sha256Of(Buffer.from("wrong")))).toBe(false);
+    expect(await store.has(PhotoStore.sha256Of(OTHER_JPEG))).toBe(false);
   });
 
   it("is idempotent for a retried upload", async () => {
@@ -117,6 +122,18 @@ describe("PhotosService.attach", () => {
 
     await expect(service.attach(event.id, Buffer.alloc(64))).rejects.toThrow();
     await expect(small.attach(event.id, Buffer.alloc(64))).rejects.toThrow(/limit is 16/);
+  });
+
+  it("refuses a body that is not an image at all", async () => {
+    const notAnImage = Buffer.from("<html><script>alert(1)</script></html>");
+    const event = await insertEvent(db.dataSource, seeded, {
+      photoHash: PhotoStore.sha256Of(notAnImage),
+    });
+
+    // The hash check cannot catch this: the device really did sign this
+    // digest. But these bytes would later be served back from our own origin,
+    // so the content itself has to be refused.
+    await expect(service.attach(event.id, notAnImage)).rejects.toThrow(/not a recognised image/);
   });
 
   it("attaches to the quarantined event too", async () => {
