@@ -132,6 +132,16 @@ export async function syncPending(): Promise<SyncOutcome> {
     }
   }
 
+  // Second pass: photos whose weigh-in landed on an earlier sync but whose
+  // bytes did not. These are invisible to pending(), so without this pass a
+  // photo that failed once would never be retried.
+  for (const record of await queue.pendingPhotos()) {
+    if (await tryUploadPhoto(record, record.serverEventId!)) {
+      await queue.update(record.id, { photoUploadedAt: new Date().toISOString(), lastError: null });
+      outcome.photosUploaded += 1;
+    }
+  }
+
   return outcome;
 }
 

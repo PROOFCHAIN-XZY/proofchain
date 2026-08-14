@@ -70,6 +70,26 @@ export async function pending(): Promise<QueuedWeighIn[]> {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/**
+ * Records whose weigh-in landed but whose photo did not.
+ *
+ * Without this the photo is stranded: `pending()` deliberately excludes synced
+ * records, so a photo that failed its upload once would sit on the phone until
+ * the retention window deleted it.
+ */
+export async function pendingPhotos(): Promise<QueuedWeighIn[]> {
+  const records = await all();
+  return records
+    .filter(
+      (r) =>
+        r.status === "synced" &&
+        r.serverEventId !== null &&
+        r.photo !== null &&
+        r.photoUploadedAt === null,
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 export async function update(id: string, patch: Partial<QueuedWeighIn>): Promise<void> {
   const database = await db();
   const existing = (await database.get(STORE, id)) as QueuedWeighIn | undefined;
@@ -97,7 +117,10 @@ export async function pruneSynced(olderThanDays = 14): Promise<number> {
 
   let removed = 0;
   for (const r of records) {
-    if (r.status === "synced" && new Date(r.createdAt).getTime() < cutoff) {
+    // A record whose photo has not been handed over yet is not finished, however
+    // old it is: deleting it destroys the only copy of that evidence.
+    const photoOutstanding = r.photo !== null && r.photoUploadedAt === null;
+    if (r.status === "synced" && !photoOutstanding && new Date(r.createdAt).getTime() < cutoff) {
       await database.delete(STORE, r.id);
       removed += 1;
     }
