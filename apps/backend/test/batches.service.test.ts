@@ -316,3 +316,40 @@ describe("BatchesService.seal", () => {
     expect(sealed.merkleRoot).toBe(expected);
   });
 });
+
+describe("BatchesService.seal — refusals", () => {
+  it("refuses to seal an empty batch", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    // An empty batch has a defined root under most Merkle conventions, and
+    // anchoring one would spend a real transaction attesting to nothing.
+    await expect(service.seal(batch.id)).rejects.toThrow(/cannot seal an empty batch/);
+  });
+
+  it("refuses a second seal", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    const first = await service.seal(batch.id);
+
+    await expect(service.seal(batch.id)).rejects.toThrow(/already sealed/);
+
+    // The first root stands. A re-seal that recomputed would be able to move
+    // the root out from under proofs already issued.
+    expect((await service.findOne(batch.id)).merkleRoot).toBe(first.merkleRoot);
+  });
+
+  it("refuses to seal a batch holding a quarantined event", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+
+    // Quarantine after the add: addEvents screens on the way in, but the
+    // integrity verdict can change afterwards, so seal re-checks.
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .update({ id: event.id }, { quarantined: true });
+
+    await expect(service.seal(batch.id)).rejects.toThrow(/contains quarantined events/);
+    expect((await service.findOne(batch.id)).status).toBe("open");
+  });
+});
