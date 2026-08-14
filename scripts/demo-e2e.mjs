@@ -136,12 +136,15 @@ async function fetchWithRetry(url, init, attempts = 3) {
   }
 }
 
-async function api(path, { method = "GET", token, body } = {}) {
+async function api(path, { method = "GET", token, body, headers = {} } = {}) {
   const res = await fetchWithRetry(`${BACKEND}${path}`, {
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      // Extra headers last: the anchor-worker routes authenticate with a shared
+      // token rather than a bearer, and the demo exercises both.
+      ...headers,
     },
     // A fresh connection per request keeps a long synchronous step from
     // poisoning the pool.
@@ -352,6 +355,37 @@ async function main() {
   console.log("  custody transfer recorded");
 
   log("7/8", "Anchoring the root on Stellar testnet");
+
+  // Before anchoring, prove the failure path is wired: report an attempt that
+  // produced nothing and check the backend holds it back rather than handing
+  // the batch straight back to the worker.
+  const beforeBackoff = await api("/batches/pending-anchor");
+  const queuedBefore = beforeBackoff.some((b) => b.id === batch.id);
+
+  await api(`/batches/${batch.id}/anchor-failure`, {
+    method: "POST",
+    body: { outcome: "failed", detail: "demo: simulated Horizon timeout" },
+    headers: { "x-anchor-worker-token": process.env.ANCHOR_WORKER_TOKEN ?? "" },
+  });
+
+  const afterBackoff = await api("/batches/pending-anchor");
+  const queuedAfter = afterBackoff.some((b) => b.id === batch.id);
+  console.log(`  failure recorded; batch withheld from the queue: ${queuedBefore && !queuedAfter}`);
+  if (!queuedBefore) failuresBeforeReport.push("sealed batch never entered the anchor queue");
+  if (queuedAfter) failuresBeforeReport.push("a failed batch was offered again immediately");
+
+  const health = await api("/batches/anchor-health", { token: accessToken });
+  const awaiting = health.batches.find((b) => b.batchId === batch.id);
+  console.log(
+    `  anchor health   : ${health.awaitingAnchor} awaiting, ${health.stuck} stuck ` +
+      `(this batch: ${awaiting?.failedAttempts ?? 0} failed, next ${awaiting?.nextAttemptAt ?? "now"})`,
+  );
+  if (!awaiting || awaiting.failedAttempts !== 1) {
+    failuresBeforeReport.push("anchor health did not report the recorded failure");
+  }
+
+  // The worker is invoked directly below, so it anchors regardless of the
+  // backoff the queue is applying — which is what makes the recovery visible.
   const workerOutput = execFileSync(
     process.execPath,
     [
@@ -365,6 +399,14 @@ async function main() {
   console.log(workerOutput.trim().split("\n").map((l) => `  ${l}`).join("\n"));
 
   log("8/8", "Fetching the audit artifact and verifying it independently");
+
+  // The failure must survive the recovery: "anchored after one failure" is a
+  // different operational fact from "anchored first time".
+  const healthAfter = await api("/batches/anchor-health", { token: accessToken });
+  const stillAwaiting = healthAfter.batches.some((b) => b.batchId === batch.id);
+  console.log(`  batch left the anchor queue after anchoring: ${!stillAwaiting}`);
+  if (stillAwaiting) failuresBeforeReport.push("anchored batch is still listed as awaiting anchor");
+
   const report = await api(`/batches/${batch.id}/report`);
 
   console.log(`  report version   : ${report.reportVersion}`);
