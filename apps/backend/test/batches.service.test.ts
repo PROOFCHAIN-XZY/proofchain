@@ -1,0 +1,85 @@
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { BatchesService } from "../src/batches/batches.service";
+import {
+  AnchorRecordEntity,
+  BatchEntity,
+  CollectionEventEntity,
+} from "../src/database/entities";
+import { createTestDatabase, type TestDatabase } from "./support/database";
+import { seedHub, type SeededHub } from "./support/fixtures";
+
+/**
+ * The batch lifecycle is the hinge of the product: before seal a batch is a
+ * mutable working set, after it the membership and root are frozen and a root
+ * goes to a public ledger. Every test here is about something that must not be
+ * possible to undo.
+ */
+
+let db: TestDatabase;
+let service: BatchesService;
+let seeded: SeededHub;
+
+function buildService(database: TestDatabase): BatchesService {
+  const { dataSource } = database;
+  return new BatchesService(
+    dataSource.getRepository(BatchEntity),
+    dataSource.getRepository(CollectionEventEntity),
+    dataSource.getRepository(AnchorRecordEntity),
+    dataSource,
+  );
+}
+
+beforeEach(async () => {
+  db ??= await createTestDatabase();
+  await db.reset();
+  service = buildService(db);
+  seeded = await seedHub(db.dataSource);
+});
+
+afterAll(async () => {
+  await db?.close();
+});
+
+describe("BatchesService.create", () => {
+  it("opens a batch with zeroed totals and no root", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+
+    expect(batch.status).toBe("open");
+    expect(batch.eventCount).toBe(0);
+    expect(Number(batch.totalWeightKg)).toBe(0);
+    // A root before sealing would mean a batch could be anchored while its
+    // membership is still mutable.
+    expect(batch.merkleRoot).toBeNull();
+    expect(batch.sealedAt).toBeNull();
+  });
+});
+
+describe("BatchesService.findOne", () => {
+  it("returns the batch by id", async () => {
+    const created = await service.create(seeded.hub.id, "pet");
+    expect((await service.findOne(created.id)).id).toBe(created.id);
+  });
+
+  it("404s rather than returning null for an unknown id", async () => {
+    await expect(service.findOne("00000000-0000-0000-0000-000000000000")).rejects.toThrow(
+      /not found/,
+    );
+  });
+});
+
+describe("BatchesService.list", () => {
+  it("filters by status", async () => {
+    await service.create(seeded.hub.id, "pet");
+    await service.create(seeded.hub.id, "hdpe");
+
+    expect(await service.list("open")).toHaveLength(2);
+    expect(await service.list("sealed")).toHaveLength(0);
+  });
+
+  it("returns every batch when no status is given", async () => {
+    await service.create(seeded.hub.id, "pet");
+    await service.create(seeded.hub.id, "hdpe");
+
+    expect(await service.list()).toHaveLength(2);
+  });
+});
