@@ -122,3 +122,58 @@ describe("EventsService.ingest — quarantine", () => {
     );
   });
 });
+
+describe("EventsService.ingest — replay", () => {
+  it("returns the original event instead of storing a copy", async () => {
+    const payload = seeded.payload();
+    const signature = seeded.sign(payload);
+
+    const first = await service.ingest(payload, signature);
+    const replay = await service.ingest(payload, signature);
+
+    expect(replay.duplicate).toBe(true);
+    expect(replay.eventId).toBe(first.eventId);
+    // A replay is not a new fact. Counting it twice would double the credited
+    // weight for a single physical weigh-in — the cheapest possible fraud.
+    expect(await db.dataSource.getRepository(CollectionEventEntity).count()).toBe(1);
+  });
+
+  it("quarantines the replayed submission rather than reporting success", async () => {
+    const payload = seeded.payload();
+    const signature = seeded.sign(payload);
+    await service.ingest(payload, signature);
+
+    const replay = await service.ingest(payload, signature);
+
+    expect(replay.quarantined).toBe(true);
+    expect(replay.integrity.findings.find((f) => f.check === "not_duplicate")?.outcome).toBe(
+      "fail",
+    );
+  });
+
+  it("treats a re-signed weigh-in with a fresh nonce as a new event", async () => {
+    await ingest();
+    const second = await ingest();
+
+    // The nonce is what makes an honest repeat capture distinguishable from a
+    // replay; without it, a collector weighing two identical loads would be
+    // told the second one is fraud.
+    expect(second.duplicate).toBe(false);
+    expect(await db.dataSource.getRepository(CollectionEventEntity).count()).toBe(2);
+  });
+
+  it("survives a concurrent double-submit of the same payload", async () => {
+    const payload = seeded.payload();
+    const signature = seeded.sign(payload);
+
+    // Two phones syncing the same queued capture race here. The unique index
+    // on payloadHash is the authority, not the earlier existence check.
+    const [a, b] = await Promise.all([
+      service.ingest(payload, signature),
+      service.ingest(payload, signature),
+    ]);
+
+    expect(a.eventId).toBe(b.eventId);
+    expect(await db.dataSource.getRepository(CollectionEventEntity).count()).toBe(1);
+  });
+});
