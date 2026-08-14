@@ -86,3 +86,80 @@ describe("LedgerVerificationService — agreement", () => {
     expect(horizon.accountData).toHaveBeenCalledWith(ACCOUNT);
   });
 });
+
+describe("LedgerVerificationService — disagreement", () => {
+  it("reports false when the memo carries a different root", async () => {
+    const result = await serviceWith(tx({ memo: b64(OTHER_ROOT) })).verify(anchor);
+
+    // A real, successful transaction that attests to something else. Either
+    // the wrong tx was recorded against this batch or the write-back was
+    // forged, and a buyer must see false rather than null.
+    expect(result.checked).toBe(true);
+    expect(result.rootMatchesLedger).toBe(false);
+  });
+
+  it("reports false when the ledger has no such transaction", async () => {
+    const result = await serviceWith({
+      ok: false,
+      reason: "not_found",
+      detail: "404",
+    }).verify(anchor);
+
+    expect(result.checked).toBe(true);
+    expect(result.rootMatchesLedger).toBe(false);
+    expect(result.detail).toMatch(/no transaction/);
+  });
+
+  it("reports false for a transaction that did not succeed", async () => {
+    const result = await serviceWith(tx({ successful: false })).verify(anchor);
+
+    expect(result.rootMatchesLedger).toBe(false);
+  });
+
+  it("does not accept a non-hash memo that happens to contain the root", async () => {
+    // MEMO_TEXT is caller-controlled free text and is not the commitment the
+    // anchor makes; only MEMO_HASH is.
+    const result = await serviceWith(tx({ memoType: "text", memo: b64(ROOT) })).verify(anchor);
+
+    expect(result.memoMatches).toBe(false);
+  });
+
+  it("ignores a data entry stored under a different batch's key", async () => {
+    const result = await serviceWith(tx({ memo: null, memoType: "none" }), {
+      ok: true,
+      value: { "proofchain:batch:someone-else": b64(ROOT) },
+    }).verify(anchor);
+
+    expect(result.dataEntryMatches).toBe(false);
+    expect(result.rootMatchesLedger).toBe(false);
+  });
+});
+
+describe("LedgerVerificationService — unavailable", () => {
+  it("reports null rather than false when Horizon cannot be reached", async () => {
+    const result = await serviceWith({
+      ok: false,
+      reason: "unavailable",
+      detail: "timed out",
+    }).verify(anchor);
+
+    // The distinction the whole tri-state exists for: an outage must not read
+    // as the ledger contradicting the batch.
+    expect(result.checked).toBe(false);
+    expect(result.rootMatchesLedger).toBeNull();
+    expect(result.detail).toMatch(/could not reach Horizon/);
+  });
+
+  it("still confirms via the memo when only the account read fails", async () => {
+    const result = await serviceWith(tx(), {
+      ok: false,
+      reason: "unavailable",
+      detail: "timed out",
+    }).verify(anchor);
+
+    // The corroborating call is optional; losing it must not downgrade an
+    // anchor the transaction itself already proves.
+    expect(result.rootMatchesLedger).toBe(true);
+    expect(result.dataEntryMatches).toBe(false);
+  });
+});
