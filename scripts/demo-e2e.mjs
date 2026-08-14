@@ -184,6 +184,19 @@ function buildWeighIn(device, index) {
   };
 }
 
+/** null is "we could not ask", which is not the same as "no". */
+function describeTriState(value) {
+  if (value === true) return "confirmed";
+  if (value === false) return "NOT ON CHAIN";
+  return "unchecked (Horizon unreachable)";
+}
+
+function describeLedger(confirmation) {
+  if (!confirmation) return "no anchor to check";
+  const detail = `memo=${confirmation.memoMatches} dataEntry=${confirmation.dataEntryMatches}`;
+  return `${describeTriState(confirmation.rootMatchesLedger)} (${detail})`;
+}
+
 async function main() {
   log("1/8", "Authenticating as the hub operator");
   const { accessToken, role } = await api("/auth/login", {
@@ -319,6 +332,7 @@ async function main() {
     console.log(`  stellar tx       : ${report.onChain.stellarTxHash}`);
     console.log(`  ledger           : ${report.onChain.stellarLedger}`);
     console.log(`  explorer         : ${report.onChain.explorerUrl}`);
+    console.log(`  ledger says      : ${describeLedger(report.onChain.ledgerConfirmation)}`);
   } else {
     console.log("  stellar tx       : NOT ANCHORED");
   }
@@ -330,12 +344,28 @@ async function main() {
 
   const verify = await api(`/batches/${batch.id}/verify/${sample.eventId}`);
   console.log(`  verify endpoint agrees: ${verify.proofValid}`);
+  console.log(`  root matches ledger   : ${describeTriState(verify.onChain?.rootMatchesLedger)}`);
+
+  // The batch-level read-back, which is what an auditor checking many events
+  // in one batch would call once instead of per event.
+  const ledger = await api(`/batches/${batch.id}/ledger`);
+  console.log(`  ledger endpoint       : ${describeLedger(ledger.confirmation)}`);
 
   const failures = [];
   if (!report.proof.rootMatchesSealedValue) failures.push("recomputed root != sealed root");
   if (!report.proof.allProofsValid) failures.push("some Merkle proofs invalid");
   if (!independent) failures.push("independent proof check failed");
   if (!report.onChain) failures.push("batch was not anchored on Stellar");
+
+  // Deliberately fails only on an explicit contradiction. A null means Horizon
+  // was unreachable from this machine, which is a network fact and must not
+  // turn a working pipeline into a red demo.
+  if (report.onChain?.ledgerConfirmation?.rootMatchesLedger === false) {
+    failures.push("Horizon does not carry the sealed root for this batch");
+  }
+  if (ledger.confirmation?.rootMatchesLedger === false) {
+    failures.push("batch ledger endpoint reports the root is not on chain");
+  }
 
   if (failures.length > 0) {
     console.error(`\n\x1b[31mDEMO FAILED:\x1b[0m ${failures.join("; ")}`);
