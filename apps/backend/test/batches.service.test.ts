@@ -452,3 +452,56 @@ describe("BatchesService.advanceStatus", () => {
     );
   });
 });
+
+describe("BatchesService.pendingAnchor", () => {
+  async function sealOne(weightKg = 4): Promise<string> {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded, { weightKg });
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+    return batch.id;
+  }
+
+  it("lists sealed batches that have no anchor yet", async () => {
+    const id = await sealOne(6.5);
+
+    const pending = await service.pendingAnchor();
+
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.id).toBe(id);
+    expect(pending[0]!.totalWeightKg).toBe(6.5);
+    expect(pending[0]!.eventCount).toBe(1);
+  });
+
+  it("excludes open batches", async () => {
+    await service.create(seeded.hub.id, "pet");
+    expect(await service.pendingAnchor()).toHaveLength(0);
+  });
+
+  it("drops a batch from the queue once it is anchored", async () => {
+    const id = await sealOne();
+    const root = (await service.findOne(id)).merkleRoot!;
+
+    await service.recordAnchor(id, {
+      merkleRoot: root,
+      stellarTxHash: "a".repeat(64),
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${id}`,
+      anchoredAt: new Date().toISOString(),
+    });
+
+    // This query is the worker's only source of truth about what still needs
+    // anchoring. A batch that lingers here after a successful anchor gets a
+    // second, duplicate transaction spent on it.
+    expect(await service.pendingAnchor()).toHaveLength(0);
+  });
+
+  it("returns the oldest sealed batch first", async () => {
+    const first = await sealOne();
+    await new Promise((r) => setTimeout(r, 5));
+    const second = await sealOne();
+
+    expect((await service.pendingAnchor()).map((b) => b.id)).toEqual([first, second]);
+  });
+});
