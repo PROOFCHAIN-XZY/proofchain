@@ -406,3 +406,49 @@ describe("BatchesService — leaf ordering", () => {
     expect(await rootFor([2, 0, 1])).toBe(await rootFor([0, 1, 2]));
   });
 });
+
+describe("BatchesService.advanceStatus", () => {
+  async function sealedBatch(): Promise<string> {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+    return batch.id;
+  }
+
+  it("walks sealed -> processed -> sold", async () => {
+    const id = await sealedBatch();
+
+    expect((await service.advanceStatus(id, "processed")).status).toBe("processed");
+    expect((await service.advanceStatus(id, "sold")).status).toBe("sold");
+  });
+
+  it("refuses to skip a step", async () => {
+    const id = await sealedBatch();
+    await expect(service.advanceStatus(id, "sold")).rejects.toThrow(/illegal transition/);
+  });
+
+  it("refuses to move backwards", async () => {
+    const id = await sealedBatch();
+    await service.advanceStatus(id, "processed");
+
+    // Reopening a sealed batch is the one transition that would let membership
+    // change after a root was published.
+    await expect(service.advanceStatus(id, "sealed")).rejects.toThrow(/illegal transition/);
+  });
+
+  it("refuses any transition out of sold", async () => {
+    const id = await sealedBatch();
+    await service.advanceStatus(id, "processed");
+    await service.advanceStatus(id, "sold");
+
+    await expect(service.advanceStatus(id, "processed")).rejects.toThrow(/allowed: none/);
+  });
+
+  it("refuses to process an unsealed batch", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    await expect(service.advanceStatus(batch.id, "processed")).rejects.toThrow(
+      /illegal transition/,
+    );
+  });
+});
