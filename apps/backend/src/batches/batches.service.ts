@@ -16,12 +16,11 @@ import {
   type MaterialType,
   type StellarNetwork,
 } from "@proofchain/shared";
+import { AnchorRecordEntity, BatchEntity, CollectionEventEntity } from "../database/entities";
 import {
-  AnchorRecordEntity,
-  BatchEntity,
-  CollectionEventEntity,
-} from "../database/entities";
-import { LedgerVerificationService } from "../ledger/ledger-verification.service";
+  LedgerVerificationService,
+  type LedgerConfirmation,
+} from "../ledger/ledger-verification.service";
 
 /**
  * Batch lifecycle: open -> sealed -> processed -> sold.
@@ -38,6 +37,21 @@ const LEGAL_TRANSITIONS: Record<BatchStatus, BatchStatus[]> = {
   processed: ["sold"],
   sold: [],
 };
+
+export interface BatchLedgerStatus {
+  batchId: string;
+  anchored: boolean;
+  merkleRoot: string | null;
+  onChain: {
+    network: StellarNetwork;
+    txHash: string;
+    ledger: number;
+    dataEntryKey: string;
+    explorerUrl: string;
+  } | null;
+  /** null only when there is no anchor to check. */
+  confirmation: LedgerConfirmation | null;
+}
 
 export interface PendingAnchorBatch {
   id: string;
@@ -183,9 +197,7 @@ export class BatchesService {
       where: { batchId },
       select: { id: true, weightKg: true },
     });
-    const totalWeightKg = Number(
-      rows.reduce((sum, r) => sum + Number(r.weightKg), 0).toFixed(3),
-    );
+    const totalWeightKg = Number(rows.reduce((sum, r) => sum + Number(r.weightKg), 0).toFixed(3));
     return { totalWeightKg, eventCount: rows.length };
   }
 
@@ -372,6 +384,50 @@ export class BatchesService {
             rootMatchesLedger: confirmation?.rootMatchesLedger ?? null,
           }
         : null,
+    };
+  }
+
+  /**
+   * Ask the ledger about a batch's anchor directly.
+   *
+   * Separate from verifyEvent because the two answer different questions and
+   * fail for different reasons: "is this weigh-in in the batch" is a Merkle
+   * question answerable from our own data, while "did this root reach the
+   * ledger" depends on Horizon being up. An auditor checking a hundred events
+   * should not make a hundred Horizon reads to learn one fact about the batch.
+   */
+  async ledgerStatus(batchId: string): Promise<BatchLedgerStatus> {
+    const batch = await this.findOne(batchId);
+    const anchor = await this.anchors.findOne({ where: { batchId } });
+
+    if (!anchor) {
+      return {
+        batchId,
+        anchored: false,
+        merkleRoot: batch.merkleRoot,
+        onChain: null,
+        confirmation: null,
+      };
+    }
+
+    const confirmation = await this.ledger.verify({
+      stellarTxHash: anchor.stellarTxHash,
+      merkleRoot: anchor.merkleRoot,
+      dataEntryKey: anchor.dataEntryKey,
+    });
+
+    return {
+      batchId,
+      anchored: true,
+      merkleRoot: batch.merkleRoot,
+      onChain: {
+        network: anchor.network,
+        txHash: anchor.stellarTxHash,
+        ledger: confirmation.ledger ?? Number(anchor.stellarLedger),
+        dataEntryKey: anchor.dataEntryKey,
+        explorerUrl: explorerUrl(anchor.network, anchor.stellarTxHash),
+      },
+      confirmation,
     };
   }
 

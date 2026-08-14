@@ -98,6 +98,18 @@ export class BatchesController {
     return this.batches.recordAnchor(id, dto);
   }
 
+  /**
+   * Public for the same reason the proof endpoint is: an auditor must be able
+   * to check the anchor without an account here. Separate from the per-event
+   * proof so checking a hundred events costs one Horizon read, not a hundred.
+   */
+  @Public()
+  @Get(":id/ledger")
+  @ApiOperation({ summary: "Re-read this batch's anchor off the Stellar ledger" })
+  ledger(@Param("id", ParseUUIDPipe) id: string) {
+    return this.batches.ledgerStatus(id);
+  }
+
   /** Open to anyone holding the ids: verification must not require our blessing. */
   @Public()
   @Get(":batchId/verify/:eventId")
