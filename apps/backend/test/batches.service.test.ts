@@ -555,3 +555,46 @@ describe("BatchesService.recordAnchor", () => {
     );
   });
 });
+
+describe("BatchesService.recordAnchor — retries and conflicts", () => {
+  let batchId: string;
+  let root: string;
+
+  beforeEach(async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    batchId = batch.id;
+    root = (await service.seal(batch.id)).merkleRoot!;
+  });
+
+  const input = (txHash: string) => ({
+    merkleRoot: root,
+    stellarTxHash: txHash,
+    stellarLedger: 4033690,
+    network: "testnet" as const,
+    dataEntryKey: `proofchain:batch:${batchId}`,
+    anchoredAt: "2026-03-01T12:00:00.000Z",
+  });
+
+  it("is idempotent for a retry of the same transaction", async () => {
+    const first = await service.recordAnchor(batchId, input("c".repeat(64)));
+    const retry = await service.recordAnchor(batchId, input("c".repeat(64)));
+
+    // The worker anchors before it writes back, so a write-back that fails on
+    // a network blip is retried against a root that is already on chain.
+    // Retrying must not 409 the worker into an unrecoverable loop.
+    expect(retry.id).toBe(first.id);
+    expect(await db.dataSource.getRepository(AnchorRecordEntity).count()).toBe(1);
+  });
+
+  it("refuses a second, different transaction for the same batch", async () => {
+    await service.recordAnchor(batchId, input("c".repeat(64)));
+
+    // Loud, not idempotent: two transactions for one batch means either a
+    // double-spend by the worker or a forged write-back, and both need a human.
+    await expect(service.recordAnchor(batchId, input("d".repeat(64)))).rejects.toThrow(
+      /already anchored by tx/,
+    );
+  });
+});
