@@ -92,7 +92,7 @@ export async function seedHub(
       hubId: hub.id,
       deviceId: device.id,
       weightKg: 12.5,
-      material: "pet",
+      material: "PET",
       lat: hub.lat,
       lng: hub.lng,
       capturedAt: new Date().toISOString(),
@@ -118,7 +118,7 @@ export async function insertEvent(
 ): Promise<CollectionEventEntity> {
   const payload = seeded.payload({
     weightKg: overrides.weightKg !== undefined ? Number(overrides.weightKg) : 12.5,
-    material: (overrides.material as MaterialType) ?? "pet",
+    material: (overrides.material as MaterialType) ?? "PET",
     capturedAt: (overrides.capturedAt ?? new Date()).toISOString(),
   });
   const signature = seeded.sign(payload);

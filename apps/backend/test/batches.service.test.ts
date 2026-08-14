@@ -43,7 +43,7 @@ afterAll(async () => {
 
 describe("BatchesService.create", () => {
   it("opens a batch with zeroed totals and no root", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
 
     expect(batch.status).toBe("open");
     expect(batch.eventCount).toBe(0);
@@ -57,7 +57,7 @@ describe("BatchesService.create", () => {
 
 describe("BatchesService.findOne", () => {
   it("returns the batch by id", async () => {
-    const created = await service.create(seeded.hub.id, "pet");
+    const created = await service.create(seeded.hub.id, "PET");
     expect((await service.findOne(created.id)).id).toBe(created.id);
   });
 
@@ -70,16 +70,16 @@ describe("BatchesService.findOne", () => {
 
 describe("BatchesService.list", () => {
   it("filters by status", async () => {
-    await service.create(seeded.hub.id, "pet");
-    await service.create(seeded.hub.id, "hdpe");
+    await service.create(seeded.hub.id, "PET");
+    await service.create(seeded.hub.id, "HDPE");
 
     expect(await service.list("open")).toHaveLength(2);
     expect(await service.list("sealed")).toHaveLength(0);
   });
 
   it("returns every batch when no status is given", async () => {
-    await service.create(seeded.hub.id, "pet");
-    await service.create(seeded.hub.id, "hdpe");
+    await service.create(seeded.hub.id, "PET");
+    await service.create(seeded.hub.id, "HDPE");
 
     expect(await service.list()).toHaveLength(2);
   });
@@ -87,7 +87,7 @@ describe("BatchesService.list", () => {
 
 describe("BatchesService.addEvents", () => {
   it("attaches eligible events and recomputes the totals", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const a = await insertEvent(db.dataSource, seeded, { weightKg: 10.25 });
     const b = await insertEvent(db.dataSource, seeded, { weightKg: 4.5 });
 
@@ -102,8 +102,8 @@ describe("BatchesService.addEvents", () => {
   });
 
   it("refuses an event that is already in another batch", async () => {
-    const first = await service.create(seeded.hub.id, "pet");
-    const second = await service.create(seeded.hub.id, "pet");
+    const first = await service.create(seeded.hub.id, "PET");
+    const second = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
 
     await service.addEvents(first.id, [event.id]);
@@ -113,7 +113,7 @@ describe("BatchesService.addEvents", () => {
   });
 
   it("rejects the whole call when any event is ineligible", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const good = await insertEvent(db.dataSource, seeded);
 
     await expect(
@@ -128,12 +128,12 @@ describe("BatchesService.addEvents", () => {
 
 describe("BatchesService.addEvents — quarantine", () => {
   it("refuses a quarantined event", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const bad = await insertEvent(db.dataSource, seeded, {
       quarantined: true,
       integrity: {
         outcome: "fail",
-        findings: [{ check: "geofence", outcome: "fail", detail: "1.2 km from hub" }],
+        findings: [{ check: "geofence_ok", outcome: "fail", detail: "1.2 km from hub" }],
       },
     });
 
@@ -144,7 +144,7 @@ describe("BatchesService.addEvents — quarantine", () => {
   });
 
   it("keeps clean events out of a batch when a quarantined one is in the same call", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const good = await insertEvent(db.dataSource, seeded);
     const bad = await insertEvent(db.dataSource, seeded, { quarantined: true });
 
@@ -160,7 +160,7 @@ describe("BatchesService.addEvents — quarantine", () => {
 describe("BatchesService.addEvents — hub and material boundaries", () => {
   it("refuses an event captured at a different hub", async () => {
     const other = await seedHub(db.dataSource);
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const foreign = await insertEvent(db.dataSource, other);
 
     // Hub membership is what ties a batch to a geofence and an operator; a
@@ -169,13 +169,13 @@ describe("BatchesService.addEvents — hub and material boundaries", () => {
   });
 
   it("refuses an event whose material differs from the batch", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
-    const hdpe = await insertEvent(db.dataSource, seeded, { material: "hdpe" });
+    const batch = await service.create(seeded.hub.id, "PET");
+    const hdpe = await insertEvent(db.dataSource, seeded, { material: "HDPE" });
 
     // Distinguished from the eligibility rejection: the event is otherwise
     // addable, so the operator needs to be told which rule it broke.
     await expect(service.addEvents(batch.id, [hdpe.id])).rejects.toThrow(
-      /do not match batch material pet/,
+      /do not match batch material PET/,
     );
     expect((await service.findOne(batch.id)).eventCount).toBe(0);
   });
@@ -183,7 +183,7 @@ describe("BatchesService.addEvents — hub and material boundaries", () => {
 
 describe("BatchesService.addEvents — sealed membership", () => {
   it("refuses to add events once the batch is sealed", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const first = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [first.id]);
     await service.seal(batch.id);
@@ -205,7 +205,7 @@ describe("BatchesService.addEvents — sealed membership", () => {
 
 describe("BatchesService.removeEvent", () => {
   it("detaches an event and recomputes the totals", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const keep = await insertEvent(db.dataSource, seeded, { weightKg: 8 });
     const drop = await insertEvent(db.dataSource, seeded, { weightKg: 3.5 });
     await service.addEvents(batch.id, [keep.id, drop.id]);
@@ -217,21 +217,21 @@ describe("BatchesService.removeEvent", () => {
   });
 
   it("returns the removed event to the eligible pool", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [event.id]);
     await service.removeEvent(batch.id, event.id);
 
     // Detaching must clear batchId, not merely delete the association row —
     // otherwise the event is stranded, countable nowhere.
-    const other = await service.create(seeded.hub.id, "pet");
+    const other = await service.create(seeded.hub.id, "PET");
     await expect(service.addEvents(other.id, [event.id])).resolves.toMatchObject({
       eventCount: 1,
     });
   });
 
   it("refuses to detach from a sealed batch", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [event.id]);
     await service.seal(batch.id);
@@ -242,7 +242,7 @@ describe("BatchesService.removeEvent", () => {
   });
 
   it("404s for an event that is not in the batch", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const loose = await insertEvent(db.dataSource, seeded);
 
     await expect(service.removeEvent(batch.id, loose.id)).rejects.toThrow(/is not in batch/);
@@ -251,7 +251,7 @@ describe("BatchesService.removeEvent", () => {
 
 describe("BatchesService — weight totals", () => {
   it("keeps three-decimal totals exact under float accumulation", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     // 0.1 + 0.2 is the canonical float trap; naive summation yields
     // 0.30000000000000004 and the batch would advertise a weight no scale
     // ever measured.
@@ -263,7 +263,7 @@ describe("BatchesService — weight totals", () => {
   });
 
   it("reads weights back as numbers, not numeric strings", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded, { weightKg: 12.345 });
     await service.addEvents(batch.id, [event.id]);
 
@@ -277,7 +277,7 @@ describe("BatchesService — weight totals", () => {
 
 describe("BatchesService.seal", () => {
   it("freezes the root, the totals and the sealed timestamp", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const events = [
       await insertEvent(db.dataSource, seeded, { weightKg: 5 }),
       await insertEvent(db.dataSource, seeded, { weightKg: 7.5 }),
@@ -298,7 +298,7 @@ describe("BatchesService.seal", () => {
   });
 
   it("produces the root an auditor recomputes from the event list alone", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const events = [
       await insertEvent(db.dataSource, seeded),
       await insertEvent(db.dataSource, seeded),
@@ -319,14 +319,14 @@ describe("BatchesService.seal", () => {
 
 describe("BatchesService.seal — refusals", () => {
   it("refuses to seal an empty batch", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     // An empty batch has a defined root under most Merkle conventions, and
     // anchoring one would spend a real transaction attesting to nothing.
     await expect(service.seal(batch.id)).rejects.toThrow(/cannot seal an empty batch/);
   });
 
   it("refuses a second seal", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [event.id]);
     const first = await service.seal(batch.id);
@@ -339,7 +339,7 @@ describe("BatchesService.seal — refusals", () => {
   });
 
   it("refuses to seal a batch holding a quarantined event", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [event.id]);
 
@@ -356,7 +356,7 @@ describe("BatchesService.seal — refusals", () => {
 
 describe("BatchesService — leaf ordering", () => {
   it("orders leaves by capture time, not by insertion order", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const later = await insertEvent(db.dataSource, seeded, {
       capturedAt: new Date("2026-03-01T10:00:00.000Z"),
     });
@@ -380,8 +380,8 @@ describe("BatchesService — leaf ordering", () => {
       await db.reset();
       const local = buildService(db);
       const hub = await seedHub(db.dataSource);
-      const batch = await local.create(hub.hub.id, "pet");
-      const made = [];
+      const batch = await local.create(hub.hub.id, "PET");
+      const made: CollectionEventEntity[] = [];
       for (const [index, at] of capturedAt.entries()) {
         made.push(
           await insertEvent(db.dataSource, hub, {
@@ -409,7 +409,7 @@ describe("BatchesService — leaf ordering", () => {
 
 describe("BatchesService.advanceStatus", () => {
   async function sealedBatch(): Promise<string> {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [event.id]);
     await service.seal(batch.id);
@@ -446,7 +446,7 @@ describe("BatchesService.advanceStatus", () => {
   });
 
   it("refuses to process an unsealed batch", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     await expect(service.advanceStatus(batch.id, "processed")).rejects.toThrow(
       /illegal transition/,
     );
@@ -455,7 +455,7 @@ describe("BatchesService.advanceStatus", () => {
 
 describe("BatchesService.pendingAnchor", () => {
   async function sealOne(weightKg = 4): Promise<string> {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded, { weightKg });
     await service.addEvents(batch.id, [event.id]);
     await service.seal(batch.id);
@@ -474,7 +474,7 @@ describe("BatchesService.pendingAnchor", () => {
   });
 
   it("excludes open batches", async () => {
-    await service.create(seeded.hub.id, "pet");
+    await service.create(seeded.hub.id, "PET");
     expect(await service.pendingAnchor()).toHaveLength(0);
   });
 
@@ -521,7 +521,7 @@ describe("BatchesService.recordAnchor", () => {
   });
 
   beforeEach(async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [event.id]);
     batchId = batch.id;
@@ -548,7 +548,7 @@ describe("BatchesService.recordAnchor", () => {
   });
 
   it("refuses to anchor a batch that was never sealed", async () => {
-    const open = await service.create(seeded.hub.id, "pet");
+    const open = await service.create(seeded.hub.id, "PET");
 
     await expect(service.recordAnchor(open.id, anchorInput())).rejects.toThrow(
       /has not been sealed/,
@@ -561,7 +561,7 @@ describe("BatchesService.recordAnchor — retries and conflicts", () => {
   let root: string;
 
   beforeEach(async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [event.id]);
     batchId = batch.id;
@@ -601,7 +601,7 @@ describe("BatchesService.recordAnchor — retries and conflicts", () => {
 
 describe("BatchesService.verifyEvent", () => {
   async function sealedWith(count: number): Promise<{ batchId: string; eventIds: string[] }> {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const events = [];
     for (let i = 0; i < count; i += 1) {
       events.push(
@@ -663,7 +663,7 @@ describe("BatchesService.verifyEvent", () => {
   });
 
   it("refuses to verify against an unsealed batch", async () => {
-    const batch = await service.create(seeded.hub.id, "pet");
+    const batch = await service.create(seeded.hub.id, "PET");
     const event = await insertEvent(db.dataSource, seeded);
     await service.addEvents(batch.id, [event.id]);
 
