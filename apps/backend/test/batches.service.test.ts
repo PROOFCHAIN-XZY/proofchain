@@ -353,3 +353,56 @@ describe("BatchesService.seal — refusals", () => {
     expect((await service.findOne(batch.id)).status).toBe("open");
   });
 });
+
+describe("BatchesService — leaf ordering", () => {
+  it("orders leaves by capture time, not by insertion order", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const later = await insertEvent(db.dataSource, seeded, {
+      capturedAt: new Date("2026-03-01T10:00:00.000Z"),
+    });
+    const earlier = await insertEvent(db.dataSource, seeded, {
+      capturedAt: new Date("2026-03-01T08:00:00.000Z"),
+    });
+    await service.addEvents(batch.id, [later.id, earlier.id]);
+
+    const ordered = await service.eventsOf(batch.id);
+    expect(ordered.map((e) => e.id)).toEqual([earlier.id, later.id]);
+  });
+
+  it("derives the same root regardless of the order events were added in", async () => {
+    const capturedAt = [
+      new Date("2026-03-01T08:00:00.000Z"),
+      new Date("2026-03-01T09:00:00.000Z"),
+      new Date("2026-03-01T10:00:00.000Z"),
+    ];
+
+    const rootFor = async (order: number[]): Promise<string> => {
+      await db.reset();
+      const local = buildService(db);
+      const hub = await seedHub(db.dataSource);
+      const batch = await local.create(hub.hub.id, "pet");
+      const made = [];
+      for (const [index, at] of capturedAt.entries()) {
+        made.push(
+          await insertEvent(db.dataSource, hub, {
+            capturedAt: at,
+            weightKg: 1,
+            // Fixed payload hashes: the leaves must be identical across both
+            // runs or the comparison would only be testing the fixture's RNG.
+            payloadHash: `${index}`.repeat(64).slice(0, 64),
+          }),
+        );
+      }
+      await local.addEvents(
+        batch.id,
+        order.map((i) => made[i]!.id),
+      );
+      return (await local.seal(batch.id)).merkleRoot!;
+    };
+
+    // Ordering is part of the commitment: if it depended on the operator's
+    // click order, two honest operators would anchor different roots for the
+    // same three weigh-ins.
+    expect(await rootFor([2, 0, 1])).toBe(await rootFor([0, 1, 2]));
+  });
+});
