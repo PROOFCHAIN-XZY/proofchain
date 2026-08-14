@@ -598,3 +598,82 @@ describe("BatchesService.recordAnchor — retries and conflicts", () => {
     );
   });
 });
+
+describe("BatchesService.verifyEvent", () => {
+  async function sealedWith(count: number): Promise<{ batchId: string; eventIds: string[] }> {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const events = [];
+    for (let i = 0; i < count; i += 1) {
+      events.push(
+        await insertEvent(db.dataSource, seeded, {
+          capturedAt: new Date(Date.UTC(2026, 2, 1, 8 + i)),
+        }),
+      );
+    }
+    await service.addEvents(
+      batch.id,
+      events.map((e) => e.id),
+    );
+    await service.seal(batch.id);
+    return { batchId: batch.id, eventIds: events.map((e) => e.id) };
+  }
+
+  it("returns a proof that validates against the sealed root", async () => {
+    const { batchId, eventIds } = await sealedWith(4);
+
+    const verification = await service.verifyEvent(batchId, eventIds[2]!);
+
+    expect(verification.proofValid).toBe(true);
+    expect(verification.merkleRoot).toBe((await service.findOne(batchId)).merkleRoot);
+    expect(verification.proof.length).toBeGreaterThan(0);
+    // Sibling position is part of the commitment, not decoration.
+    expect(verification.proof.every((s) => s.side === "left" || s.side === "right")).toBe(true);
+  });
+
+  it("produces a valid proof for every event in an odd-sized batch", async () => {
+    // Odd counts exercise the duplicated-last-leaf path, where an off-by-one
+    // produces proofs that validate for some events and not others.
+    const { batchId, eventIds } = await sealedWith(5);
+
+    for (const id of eventIds) {
+      expect((await service.verifyEvent(batchId, id)).proofValid).toBe(true);
+    }
+  });
+
+  it("reports the on-chain transaction once anchored", async () => {
+    const { batchId, eventIds } = await sealedWith(2);
+    const root = (await service.findOne(batchId)).merkleRoot!;
+    await service.recordAnchor(batchId, {
+      merkleRoot: root,
+      stellarTxHash: "e".repeat(64),
+      stellarLedger: 4033690,
+      network: "testnet",
+      dataEntryKey: `proofchain:batch:${batchId}`,
+      anchoredAt: "2026-03-01T12:00:00.000Z",
+    });
+
+    const verification = await service.verifyEvent(batchId, eventIds[0]!);
+
+    expect(verification.onChain).toMatchObject({
+      network: "testnet",
+      txHash: "e".repeat(64),
+      ledger: 4033690,
+    });
+    expect(verification.onChain?.explorerUrl).toContain("testnet");
+  });
+
+  it("refuses to verify against an unsealed batch", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+
+    await expect(service.verifyEvent(batch.id, event.id)).rejects.toThrow(/has not been sealed/);
+  });
+
+  it("404s for an event outside the batch", async () => {
+    const { batchId } = await sealedWith(2);
+    const stranger = await insertEvent(db.dataSource, seeded);
+
+    await expect(service.verifyEvent(batchId, stranger.id)).rejects.toThrow(/is not in batch/);
+  });
+});
