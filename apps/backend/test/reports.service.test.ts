@@ -347,3 +347,30 @@ describe("ReportsService — photo evidence", () => {
     expect(report.attestationNotes.join(" ")).toMatch(/recompute the sha256/i);
   });
 });
+
+describe("ReportsService.buildEventCsv — photo column", () => {
+  it("carries the photo URL alongside the digest", async () => {
+    const batchId = await sealedBatch([2]);
+    const [event] = await batches.eventsOf(batchId);
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .update({ id: event!.id }, { photoUri: "ab/cd/abcd.bin" });
+
+    const csv = await reports.buildEventCsv(batchId);
+    const [header, row] = csv.split("\r\n");
+
+    const columns = header!.split(",");
+    expect(columns).toContain("photo_url");
+    expect(parseCsvRow(row!)[columns.indexOf("photo_url")]).toBe(`/events/${event!.id}/photo`);
+  });
+
+  it("keeps the column count fixed when there is no photo", async () => {
+    const csv = await reports.buildEventCsv(await sealedBatch([2]));
+    const [header, row] = csv.split("\r\n");
+
+    // An empty cell, not a missing one: ragged rows silently misalign every
+    // later field in whatever spreadsheet the verifier opens this in.
+    expect(parseCsvRow(row!)).toHaveLength(header!.split(",").length);
+    expect(parseCsvRow(row!)[header!.split(",").indexOf("photo_url")]).toBe("");
+  });
+});

@@ -328,6 +328,7 @@ export class ReportsService {
       "lat",
       "lng",
       "photo_sha256",
+      "photo_url",
       "payload_sha256",
       "merkle_leaf",
       "integrity",
@@ -345,6 +346,9 @@ export class ReportsService {
         e.lat.toFixed(6),
         e.lng.toFixed(6),
         e.photoHash,
+        // Empty rather than absent so the column count stays fixed: a
+        // spreadsheet with ragged rows silently misaligns every later field.
+        e.photoUrl ?? "",
         e.payloadHash,
         e.leaf,
         e.integrityOutcome,
