@@ -505,3 +505,53 @@ describe("BatchesService.pendingAnchor", () => {
     expect((await service.pendingAnchor()).map((b) => b.id)).toEqual([first, second]);
   });
 });
+
+describe("BatchesService.recordAnchor", () => {
+  let batchId: string;
+  let root: string;
+
+  const anchorInput = (overrides: Record<string, unknown> = {}) => ({
+    merkleRoot: root,
+    stellarTxHash: "b".repeat(64),
+    stellarLedger: 4033690,
+    network: "testnet" as const,
+    dataEntryKey: `proofchain:batch:${batchId}`,
+    anchoredAt: "2026-03-01T12:00:00.000Z",
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    batchId = batch.id;
+    root = (await service.seal(batch.id)).merkleRoot!;
+  });
+
+  it("records the transaction against the sealed batch", async () => {
+    const anchor = await service.recordAnchor(batchId, anchorInput());
+
+    expect(anchor.stellarTxHash).toBe("b".repeat(64));
+    expect(Number(anchor.stellarLedger)).toBe(4033690);
+    expect(anchor.merkleRoot).toBe(root);
+  });
+
+  it("refuses a root that disagrees with the sealed one", async () => {
+    // An anchor pointing at data other than what was sealed is worse than no
+    // anchor: the report would carry a real transaction attesting to a
+    // different set of weigh-ins.
+    await expect(
+      service.recordAnchor(batchId, anchorInput({ merkleRoot: "f".repeat(64) })),
+    ).rejects.toThrow(/does not match sealed root/);
+
+    expect(await service.pendingAnchor()).toHaveLength(1);
+  });
+
+  it("refuses to anchor a batch that was never sealed", async () => {
+    const open = await service.create(seeded.hub.id, "pet");
+
+    await expect(service.recordAnchor(open.id, anchorInput())).rejects.toThrow(
+      /has not been sealed/,
+    );
+  });
+});
