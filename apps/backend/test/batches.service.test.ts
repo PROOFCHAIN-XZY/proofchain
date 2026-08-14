@@ -201,3 +201,49 @@ describe("BatchesService.addEvents — sealed membership", () => {
     ).rejects.toThrow(/not found/);
   });
 });
+
+describe("BatchesService.removeEvent", () => {
+  it("detaches an event and recomputes the totals", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const keep = await insertEvent(db.dataSource, seeded, { weightKg: 8 });
+    const drop = await insertEvent(db.dataSource, seeded, { weightKg: 3.5 });
+    await service.addEvents(batch.id, [keep.id, drop.id]);
+
+    const updated = await service.removeEvent(batch.id, drop.id);
+
+    expect(updated.eventCount).toBe(1);
+    expect(Number(updated.totalWeightKg)).toBe(8);
+  });
+
+  it("returns the removed event to the eligible pool", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    await service.removeEvent(batch.id, event.id);
+
+    // Detaching must clear batchId, not merely delete the association row —
+    // otherwise the event is stranded, countable nowhere.
+    const other = await service.create(seeded.hub.id, "pet");
+    await expect(service.addEvents(other.id, [event.id])).resolves.toMatchObject({
+      eventCount: 1,
+    });
+  });
+
+  it("refuses to detach from a sealed batch", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const event = await insertEvent(db.dataSource, seeded);
+    await service.addEvents(batch.id, [event.id]);
+    await service.seal(batch.id);
+
+    await expect(service.removeEvent(batch.id, event.id)).rejects.toThrow(
+      /sealed membership cannot change/,
+    );
+  });
+
+  it("404s for an event that is not in the batch", async () => {
+    const batch = await service.create(seeded.hub.id, "pet");
+    const loose = await insertEvent(db.dataSource, seeded);
+
+    await expect(service.removeEvent(batch.id, loose.id)).rejects.toThrow(/is not in batch/);
+  });
+});
