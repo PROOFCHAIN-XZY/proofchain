@@ -68,3 +68,57 @@ describe("EventsService.ingest", () => {
     );
   });
 });
+
+describe("EventsService.ingest — quarantine", () => {
+  it("stores a weigh-in outside the geofence rather than dropping it", async () => {
+    // ~3 km north of the hub, well outside the 300 m fence.
+    const result = await ingest({ lat: seeded.hub.lat + 0.027 });
+
+    expect(result.quarantined).toBe(true);
+    expect(result.integrity.outcome).toBe("fail");
+    expect(result.integrity.findings.some((f) => f.check === "geofence_ok")).toBe(true);
+
+    // Kept, not discarded: quarantined records are the raw material of fraud
+    // detection and of the "% captured cleanly" pilot metric.
+    const stored = await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .findOneByOrFail({ id: result.eventId });
+    expect(stored.quarantined).toBe(true);
+  });
+
+  it("quarantines a payload whose signature does not cover it", async () => {
+    const honest = seeded.payload({ weightKg: 5 });
+    const signature = seeded.sign(honest);
+
+    // The tamper an inflated credit needs: same signature, heavier payload.
+    const inflated = { ...honest, weightKg: 500 };
+    const result = await service.ingest(inflated, signature);
+
+    expect(result.quarantined).toBe(true);
+    expect(
+      result.integrity.findings.find((f) => f.check === "signature_valid")?.outcome,
+    ).toBe("fail");
+  });
+
+  it("quarantines a weigh-in above the hub's maximum weight", async () => {
+    const result = await ingest({ weightKg: 900 });
+
+    expect(result.quarantined).toBe(true);
+    expect(result.integrity.findings.find((f) => f.check === "weight_in_range")?.outcome).toBe(
+      "fail",
+    );
+  });
+
+  it("quarantines a weigh-in from a revoked device", async () => {
+    await db.dataSource
+      .getRepository(CollectionEventEntity)
+      .manager.update("devices", { id: seeded.device.id }, { revokedAt: new Date() });
+
+    const result = await ingest();
+
+    expect(result.quarantined).toBe(true);
+    expect(result.integrity.findings.find((f) => f.check === "device_enrolled")?.outcome).toBe(
+      "fail",
+    );
+  });
+});
