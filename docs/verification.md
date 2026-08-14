@@ -344,6 +344,30 @@ echo "https://stellar.expert/explorer/testnet/tx/3fb0f496f209507098e6439c646a60d
 # (Replace tx hash with your own)
 ```
 
+## Step 4b: Verify the Weigh-in Photos
+
+Each event in the report carries `photoHash` — a sha256 the capture device signed into the payload alongside the weight and the location. Where `photoAvailable` is `true`, ProofChain also holds the bytes and will serve them.
+
+```bash
+jq '.events[0] | {eventId, photoHash, photoAvailable, photoUrl}' report.json
+```
+
+Download one and recompute the digest yourself:
+
+```bash
+EVENT_ID=$(jq -r '.events[0].eventId' report.json)
+curl -s "http://localhost:3000/events/$EVENT_ID/photo" -o photo.bin
+
+sha256sum photo.bin
+jq -r '.events[0].photoHash' report.json
+```
+
+The two must be identical. If they are, the image you are looking at is the one the collector's device photographed and signed at capture time — not one substituted afterwards, because a substituted photo would have to hash to a value fixed before the substitution.
+
+**What this proves, and what it does not.** It proves the image is the one signed at capture. It does *not* prove the image depicts the material claimed, that it was taken at that moment, or that it was not itself staged. Photo *content* analysis is out of scope for this release; the check above is about provenance only.
+
+`photoAvailable: false` means the bytes were never uploaded — usually a phone that has not finished syncing over a poor link. The weigh-in is still valid: it is signed, geofenced and in the Merkle tree. Only this particular corroboration is missing, and the digest is still published, so an auditor who obtains the original photo by other means can verify it against the report.
+
 ## Step 5: Check the Audit Report Endpoint
 
 Alternatively, ProofChain provides a verification endpoint that does some of this work for you:
@@ -503,6 +527,10 @@ chmod +x verify-batch.sh
 ### `ledgerConfirmation.rootMatchesLedger` is null
 
 Horizon was unreachable from ProofChain's server when the report was built — a timeout, a rate limit, or an outage. It is not a finding about the batch. Re-request the report, or skip it entirely and run the Horizon queries in Step 4 yourself; your network path to Horizon is independent of ours, which is rather the point.
+
+### The photo's sha256 does not match photoHash
+
+Stop and escalate. ProofChain refuses to store bytes that do not match the signed digest, so a mismatch here means either the stored file was altered after the fact on disk, or the report and the photo came from different sources. Do not accept the batch on the strength of the remaining evidence until it is explained.
 
 ### Stellar transaction not found
 
