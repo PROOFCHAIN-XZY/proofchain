@@ -189,7 +189,59 @@ export class CreateCustodyTransferDto {
 export class LoginDto {
   @IsEmail() email: string;
 
+  // Deliberately looser than the 12-character minimum enforced when a password
+  // is *set*: this validates an attempt to use an existing credential, and
+  // rejecting a short one here would tell an attacker which accounts predate
+  // the policy. Wrong passwords fail as wrong passwords.
   @IsString() @MinLength(8) @MaxLength(200) password: string;
+}
+
+/**
+ * Minimum length for any password this system stores.
+ *
+ * Long rather than complex: length is what defeats offline cracking of an
+ * argon2id hash, and composition rules mostly produce "Password1!". These
+ * accounts can open, seal and anchor batches, so they are worth guessing.
+ */
+const PASSWORD_MIN_LENGTH = 12;
+
+class PasswordFieldDto {
+  @IsString()
+  @MinLength(PASSWORD_MIN_LENGTH, {
+    message: `password must be at least ${PASSWORD_MIN_LENGTH} characters`,
+  })
+  // Bounded because argon2 hashes the whole input: an unbounded password is a
+  // CPU-exhaustion vector on an unauthenticated-ish endpoint.
+  @MaxLength(200)
+  newPassword: string;
+}
+
+export class CreateUserDto {
+  @IsEmail() email: string;
+
+  @IsString()
+  @MinLength(PASSWORD_MIN_LENGTH, {
+    message: `password must be at least ${PASSWORD_MIN_LENGTH} characters`,
+  })
+  @MaxLength(200)
+  password: string;
+
+  @IsIn(["admin", "operator", "auditor"])
+  role: "admin" | "operator" | "auditor";
+}
+
+export class UpdateUserDto {
+  @IsOptional() @IsIn(["admin", "operator", "auditor"]) role?: "admin" | "operator" | "auditor";
+
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+/** Admin resetting somebody else's password; no current password to prove. */
+export class ResetPasswordDto extends PasswordFieldDto {}
+
+/** A user changing their own password, proving they hold the current one. */
+export class ChangePasswordDto extends PasswordFieldDto {
+  @IsString() @IsNotEmpty() @MaxLength(200) currentPassword: string;
 }
 
 export class ListEventsQueryDto {
