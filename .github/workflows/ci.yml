@@ -56,6 +56,103 @@ jobs:
       - name: Test
         run: npm run test
 
+  backend-integration:
+    name: Backend integration (Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # The default `npm test` excludes these — they need a real database, and a
+    # clone with no infrastructure has to stay runnable. Giving them their own
+    # job means an unreachable Postgres fails the build here rather than being
+    # quietly skipped everywhere.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: proofchain
+          POSTGRES_PASSWORD: proofchain
+          # The suite creates and migrates `proofchain_test` itself; this is
+          # only the maintenance database it connects to in order to do so.
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        # Without this the first test can open a connection before Postgres is
+        # accepting them — the job then fails on a race, not on the code.
+        options: >-
+          --health-cmd "pg_isready -U proofchain -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Not the local default of 5433: the service container publishes the
+      # standard port here, and there is no compose file to collide with.
+      TEST_DATABASE_URL: postgres://proofchain:proofchain@localhost:5432/proofchain_test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # Kept in step with the node job above; see the note there.
+          node-version: "20.19.4"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --fetch-retries=5 --fetch-retry-maxtimeout=60000
+
+      # Only the shared package, not the whole `npm run build`: the tests import
+      # @proofchain/shared through its built dist, but they run the backend from
+      # source, so building the frontends here would be time spent on nothing.
+      - name: Build shared package
+        run: npm run build -w @proofchain/shared
+
+      - name: Integration tests
+        run: npm run test:integration -w @proofchain/backend
+
+  docker:
+    name: Deployment image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # The Dockerfile is the deployment artifact for both the API and the anchor
+    # worker. Nothing else in CI exercises it, so without this job it rots
+    # quietly and the breakage surfaces during a deploy — the worst moment to
+    # discover that a workspace manifest was added and `npm ci` now fails.
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: proofchain:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # An image that builds but cannot start is still a broken build, and the
+      # usual cause is a production dependency that only ever resolved because
+      # devDependencies were installed. Both entrypoints are checked: they ship
+      # in the same image and are deployed as separate services.
+      - name: Both entrypoints load
+        run: |
+          # Reaching config validation means the whole Nest graph resolved
+          # inside the pruned tree. It stops there because no env is supplied,
+          # which is the expected failure, so the exit code is not the signal.
+          docker run --rm proofchain:ci node -e "require('/app/apps/backend/dist/main.js')" \
+            > /tmp/api.log 2>&1 || true
+          grep -q "missing required environment variable" /tmp/api.log \
+            || { echo "API entrypoint failed for an unexpected reason:"; cat /tmp/api.log; exit 1; }
+
+          # The worker only starts its poll loop when it is the entry module,
+          # so requiring it resolves every import without running anything.
+          docker run --rm proofchain:ci \
+            node -e "require('/app/services/anchor-worker/dist/index.js')"
+
   contracts:
     name: Soroban contract (clippy, test, wasm)
     runs-on: ubuntu-latest

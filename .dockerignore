@@ -1,0 +1,42 @@
+# Keeping these out of the build context is not only about speed: `var/`
+# holds seeded device PRIVATE keys and `.env` holds the Stellar secret and JWT
+# signing key. Copying either into an image would put them in every layer that
+# image is ever pushed to.
+.env
+.env.*
+!.env.example
+**/var/
+**/.env
+**/.env.*
+!**/.env.example
+
+node_modules
+**/node_modules
+**/dist
+**/build
+**/.next
+**/out
+**/coverage
+**/*.tsbuildinfo
+
+.git
+.github
+.claude
+contracts/**/target
+infra/pgdata
+e2e/screenshots
+**/*.log
+
+# The frontends are not built here, but `npm ci` validates the whole workspace
+# graph against the lockfile and fails on a missing member — so their manifests
+# have to be in the context even though their source does not.
+apps/capture/*
+!apps/capture/package.json
+apps/dashboard/*
+!apps/dashboard/package.json
+apps/mobile/*
+!apps/mobile/package.json
+
+docs
+e2e
+scripts
