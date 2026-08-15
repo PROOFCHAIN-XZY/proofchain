@@ -10,6 +10,7 @@ import helmet from "helmet";
 import { AppModule } from "./app.module";
 import { loadConfig } from "./config/configuration";
 import { isAllowedOrigin } from "./config/cors";
+import { trustProxyWarning } from "./config/trust-proxy";
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
@@ -17,6 +18,14 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
 
   app.use(helmet());
+
+  // Must be set before any request is served: `req.ip` is what the login and
+  // ingest rate limiters key on, and behind a load balancer it is the balancer's
+  // address unless Express is told how many proxies to look past. See
+  // config/trust-proxy.ts for why this is opt-in rather than always on.
+  app.getHttpAdapter().getInstance().set("trust proxy", config.trustProxy);
+  const proxyWarning = trustProxyWarning(config.trustProxy, config.nodeEnv === "production");
+  if (proxyWarning) logger.warn(proxyWarning);
 
   // Production honours the allowlist alone; development additionally accepts
   // loopback and private-network origins so the capture PWA can be exercised
@@ -73,9 +82,10 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   await app.listen(config.port, "0.0.0.0");
-  new Logger("bootstrap").log(
-    `ProofChain API listening on :${config.port} (${config.nodeEnv}) — docs at /docs`,
-  );
+  // The docs are only mounted outside production, so naming them
+  // unconditionally sends whoever reads a production boot log to a 404.
+  const docsHint = config.nodeEnv === "production" ? "" : " — docs at /docs";
+  logger.log(`ProofChain API listening on :${config.port} (${config.nodeEnv})${docsHint}`);
 }
 
 void bootstrap();
