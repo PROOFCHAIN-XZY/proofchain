@@ -4,6 +4,14 @@ export class InitialSchema1786190303177 implements MigrationInterface {
     name = 'InitialSchema1786190303177'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Every table below defaults its primary key to uuid_generate_v4(), which
+        // lives in uuid-ossp and is NOT installed in a stock Postgres. Without
+        // this line the very first CREATE TABLE fails with "function
+        // uuid_generate_v4() does not exist" on any database nobody has prepared
+        // by hand — a fresh Neon branch, a CI service container, a new clone.
+        // IF NOT EXISTS keeps it a no-op on databases where it was created
+        // manually before this line existed.
+        await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`);
         await queryRunner.query(`CREATE TABLE "hubs" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "code" character varying NOT NULL, "name" character varying NOT NULL, "lat" double precision NOT NULL, "lng" double precision NOT NULL, "geofenceRadiusM" integer NOT NULL DEFAULT '250', "minWeightKg" numeric(10,3) NOT NULL DEFAULT '0.1', "maxWeightKg" numeric(10,3) NOT NULL DEFAULT '500', "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), CONSTRAINT "UQ_a5b22a077572b2ebcff8be166e2" UNIQUE ("code"), CONSTRAINT "PK_44b53d1f2b4568b26ce4710b843" PRIMARY KEY ("id"))`);
         await queryRunner.query(`CREATE TABLE "collectors" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "name" character varying NOT NULL, "phone" character varying NOT NULL, "cooperativeId" character varying, "kycLevel" character varying NOT NULL DEFAULT 'none', "homeLat" double precision, "homeLng" double precision, "active" boolean NOT NULL DEFAULT true, "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), CONSTRAINT "UQ_9ee574b062d157712d9db3f9030" UNIQUE ("phone"), CONSTRAINT "PK_da4185226ea730100d5aa647afe" PRIMARY KEY ("id"))`);
         await queryRunner.query(`CREATE TABLE "devices" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "collectorId" uuid NOT NULL, "label" character varying NOT NULL, "publicKeyBase64" character varying NOT NULL, "enrolledAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "revokedAt" TIMESTAMP WITH TIME ZONE, CONSTRAINT "UQ_b14fbd21744d3c9fcf8744f1af1" UNIQUE ("publicKeyBase64"), CONSTRAINT "PK_b1514758245c12daf43486dd1f0" PRIMARY KEY ("id"))`);
@@ -61,6 +69,9 @@ export class InitialSchema1786190303177 implements MigrationInterface {
         await queryRunner.query(`DROP TABLE "devices"`);
         await queryRunner.query(`DROP TABLE "collectors"`);
         await queryRunner.query(`DROP TABLE "hubs"`);
+        // The uuid-ossp extension is deliberately left in place. It is
+        // database-wide, not owned by this schema, and dropping it would break
+        // anything else in the same database that depends on it.
     }
 
 }

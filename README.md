@@ -253,8 +253,18 @@ node scripts/demo-e2e.mjs
 - `POST /batches/:id/anchor-failure` — Anchor worker reports a failed attempt
   (shared worker token, not a JWT)
 
+### Accounts
+- `POST /auth/login` — Exchange email and password for a JWT
+- `GET /auth/me` — Who the presented token belongs to, as the database sees them now
+- `POST /auth/password` — Change your own password
+- `GET|POST /users`, `GET|PATCH /users/:id`, `POST /users/:id/password` — Admin only
+
+Deactivating a user (`PATCH /users/:id {"active": false}`) takes effect on their
+next request rather than when their token expires: the guard re-reads the row.
+The last active admin cannot be demoted or deactivated.
+
 ### Health
-- `GET /health` — Liveness check
+- `GET /health` — Liveness check, including a database query
 
 ## Known Limitations
 

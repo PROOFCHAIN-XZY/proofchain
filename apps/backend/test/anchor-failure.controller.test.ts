@@ -6,7 +6,9 @@ import { JwtService } from "@nestjs/jwt";
 import request from "supertest";
 import { BatchesController } from "../src/batches/batches.controller";
 import { BatchesService } from "../src/batches/batches.service";
+import { getRepositoryToken } from "@nestjs/typeorm";
 import { AnchorWorkerGuard, JwtAuthGuard } from "../src/auth/auth.module";
+import { UserEntity } from "../src/database/entities";
 import { stubRequiredEnv } from "./support/services";
 
 /**
@@ -30,6 +32,11 @@ beforeAll(async () => {
     providers: [
       { provide: BatchesService, useValue: { recordAnchorFailure } },
       { provide: JwtService, useValue: { verifyAsync: async () => ({ role: "operator" }) } },
+      // JwtAuthGuard re-reads the account on every authenticated request, so
+      // that deactivating a user takes effect immediately rather than whenever
+      // their token happens to expire. The route under test is @Public() and
+      // never reaches the lookup, but the guard is still constructed.
+      { provide: getRepositoryToken(UserEntity), useValue: { findOne: async () => null } },
       Reflector,
       AnchorWorkerGuard,
       { provide: APP_GUARD, useClass: JwtAuthGuard },
