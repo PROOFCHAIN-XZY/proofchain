@@ -1,4 +1,4 @@
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   IsArray,
   IsBoolean,
@@ -27,6 +27,33 @@ import { BATCH_STATUSES, MATERIAL_TYPES, type BatchStatus, type MaterialType } f
  */
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Query-string booleans.
+ *
+ * A URL carries `?quarantined=false` as the STRING "false", and every non-empty
+ * string is truthy — so `@Type(() => Boolean)` turns it into `true` and
+ * `@IsBoolean()` then waves it through as a perfectly valid boolean. The filter
+ * silently returns the exact opposite of what was asked for, which on
+ * `GET /events?quarantined=false` means an operator asking for clean events is
+ * shown only the quarantined ones.
+ *
+ * Anything that is not a recognised spelling is passed through untouched so
+ * `@IsBoolean()` rejects it with a 400. Guessing at `?quarantined=maybe` would
+ * reintroduce the same class of silent wrong answer.
+ */
+const QueryBoolean = (): PropertyDecorator =>
+  Transform(({ value }) => {
+    if (typeof value === "boolean") return value;
+    // Absent, or present-but-empty (`?quarantined=`): express no preference
+    // rather than asserting false, so @IsOptional() drops the filter entirely.
+    if (value === undefined || value === null || value === "") return undefined;
+
+    const normalised = String(value).trim().toLowerCase();
+    if (normalised === "true" || normalised === "1") return true;
+    if (normalised === "false" || normalised === "0") return false;
+    return value;
+  });
 
 export class WeighInPayloadDto {
   @IsIn(["proofchain.weighin.v1"])
@@ -169,8 +196,8 @@ export class ListEventsQueryDto {
   @IsOptional() @IsUUID() hubId?: string;
   @IsOptional() @IsUUID() collectorId?: string;
 
-  @IsOptional() @IsBoolean() @Type(() => Boolean) batched?: boolean;
-  @IsOptional() @IsBoolean() @Type(() => Boolean) quarantined?: boolean;
+  @IsOptional() @IsBoolean() @QueryBoolean() batched?: boolean;
+  @IsOptional() @IsBoolean() @QueryBoolean() quarantined?: boolean;
 
   @IsOptional() @IsNumber() @Min(1) @Max(500) @Type(() => Number) limit?: number;
 }

@@ -242,6 +242,19 @@ export class BatchesService {
 
   async advanceStatus(batchId: string, to: BatchStatus): Promise<BatchEntity> {
     const batch = await this.findOne(batchId);
+
+    // `open -> sealed` is a legal step in the lifecycle, but not one that can be
+    // taken by setting a column. Sealing means computing and freezing the root;
+    // arriving at "sealed" without one leaves a batch that cannot be added to,
+    // cannot be removed from, cannot be anchored (pendingAnchor requires a root)
+    // and cannot be sealed either, because seal() only accepts an open batch.
+    // The batch and every event in it would be stuck there permanently.
+    if (to === "sealed") {
+      throw new ConflictException(
+        "a batch is sealed by POST /batches/:id/seal, which computes and freezes its Merkle root",
+      );
+    }
+
     const allowed = LEGAL_TRANSITIONS[batch.status];
     if (!allowed.includes(to)) {
       throw new ConflictException(
