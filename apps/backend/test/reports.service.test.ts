@@ -13,7 +13,11 @@ import {
 } from "../src/database/entities";
 import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
-import { buildReportsService, stubLedgerVerification } from "./support/services";
+import {
+  buildAnchorAttemptsService,
+  buildReportsService,
+  stubLedgerVerification,
+} from "./support/services";
 
 /**
  * The audit artifact IS the product: everything else exists to be able to
@@ -36,6 +40,7 @@ beforeEach(async () => {
     db.dataSource.getRepository(AnchorRecordEntity),
     db.dataSource,
     stubLedgerVerification(),
+    buildAnchorAttemptsService(db.dataSource),
   );
   seeded = await seedHub(db.dataSource);
 });

@@ -12,6 +12,7 @@ import {
   UpdateDateColumn,
 } from "typeorm";
 import type {
+  AnchorAttemptOutcome,
   BatchStatus,
   IntegrityVerdict,
   KycLevel,
@@ -351,6 +352,61 @@ export class AnchorRecordEntity {
   createdAt: Date;
 }
 
+/**
+ * One recorded attempt to put a batch's root on the ledger.
+ *
+ * Append-only, and it exists because failure was previously invisible. The
+ * worker logged `[anchor-failed]` to stdout and moved on, leaving a batch that
+ * had failed four hundred times indistinguishable from one sealed a minute ago:
+ * both simply sat in the pending queue. Nobody could answer "is anchoring
+ * working" without reading worker logs, and nothing throttled the retries.
+ *
+ * Successes are recorded too, so the table reads as the full history of what
+ * was tried rather than a list of complaints.
+ */
+@Entity("anchor_attempts")
+@Index("ix_anchor_attempt_batch_time", ["batchId", "occurredAt"])
+export class AnchorAttemptEntity {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Index()
+  @Column("uuid")
+  batchId: string;
+
+  @ManyToOne(() => BatchEntity, { onDelete: "CASCADE" })
+  @JoinColumn({ name: "batchId" })
+  batch: BatchEntity;
+
+  /** 1-based, assigned by the backend so two workers cannot both claim "attempt 3". */
+  @Column("int")
+  attemptNumber: number;
+
+  /**
+   * `failed` — the transaction never made it onto the ledger.
+   * `unverified` — it was submitted but the read-back could not confirm it,
+   *   which is the more alarming of the two: it may have cost a real fee and
+   *   may yet appear.
+   * `succeeded` — the anchor was recorded.
+   */
+  @Column({ type: "varchar" })
+  outcome: AnchorAttemptOutcome;
+
+  /** The error text, truncated. Operators debug from this, so it is stored verbatim. */
+  @Column({ type: "text", nullable: true })
+  detail: string | null;
+
+  /** A transaction hash exists for `unverified` attempts and is what an operator chases. */
+  @Column({ type: "varchar", nullable: true })
+  stellarTxHash: string | null;
+
+  @Column("timestamptz")
+  occurredAt: Date;
+
+  @CreateDateColumn({ type: "timestamptz" })
+  createdAt: Date;
+}
+
 /** Operator/auditor login. Collectors authenticate by device key, not password. */
 @Entity("users")
 export class UserEntity {
@@ -382,5 +438,6 @@ export const ALL_ENTITIES = [
   CollectionEventEntity,
   CustodyTransferEntity,
   AnchorRecordEntity,
+  AnchorAttemptEntity,
   UserEntity,
 ];

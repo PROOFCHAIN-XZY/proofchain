@@ -207,7 +207,10 @@ node scripts/demo-e2e.mjs
 - **Independent verification** — Merkle proofs, Horizon lookup, audit report.
 - **Ledger read-back** — the verify endpoint and the audit report re-read the
   anchor off Horizon rather than reporting our own stored record of it.
-- **Operator dashboard** — View batches, events, custody transfers.
+- **Operator dashboard** — View batches, events, custody transfers, and why a
+  batch has failed to anchor.
+- **Durable anchor history** — Every anchor attempt is recorded, so a stuck
+  batch is visible without reading worker logs.
 - **Offline-first capture** — PWA and Expo app with IndexedDB queue.
 - **Photo evidence** — Photos upload separately from the weigh-in and are stored
   only if they hash to the digest the device signed.
@@ -242,13 +245,26 @@ node scripts/demo-e2e.mjs
 - `POST /events` — Ingest a signed weigh-in
 
 ### Operator (JWT required)
+- `GET /batches/anchor-health` — Batches awaiting an anchor, with failure history
 - `POST /batches` — Open a batch
 - `POST /batches/:id/events` — Add events to a batch
 - `POST /batches/:id/seal` — Seal and compute Merkle root
 - `POST /batches/:id/custody` — Record chain of custody
+- `POST /batches/:id/anchor-failure` — Anchor worker reports a failed attempt
+  (shared worker token, not a JWT)
+
+### Accounts
+- `POST /auth/login` — Exchange email and password for a JWT
+- `GET /auth/me` — Who the presented token belongs to, as the database sees them now
+- `POST /auth/password` — Change your own password
+- `GET|POST /users`, `GET|PATCH /users/:id`, `POST /users/:id/password` — Admin only
+
+Deactivating a user (`PATCH /users/:id {"active": false}`) takes effect on their
+next request rather than when their token expires: the guard re-reads the row.
+The last active admin cannot be demoted or deactivated.
 
 ### Health
-- `GET /health` — Liveness check
+- `GET /health` — Liveness check, including a database query
 
 ## Known Limitations
 
@@ -262,6 +278,11 @@ node scripts/demo-e2e.mjs
 - **Timestamp-only integrity** — Clock skew tolerance is ±15 seconds. Offline sync is allowed (warn outcome) but flagged.
 - **No rollback** — Once a batch is sealed, it cannot be modified. Events cannot be removed from a sealed batch.
 - **Single-thread anchoring** — The worker processes one batch at a time. High-volume use requires async job queue (BullMQ integration planned).
+- **Anchor retries are scheduled, not queued** — A failed anchor backs off
+  exponentially (30 s doubling to a 1 h ceiling) and the backend withholds the
+  batch until it is due. There is no dead-letter queue: a batch that keeps
+  failing keeps retrying hourly and is reported as `stuck` rather than being
+  parked. See [runbook](docs/runbook.md) for the recovery procedure.
 - **Photos are stored on local disk** — `PHOTO_STORAGE_DIR` is a filesystem path,
   so it needs a mounted volume and a backup policy; there is no object store or
   replication yet. Photos are personal data about identifiable collectors and

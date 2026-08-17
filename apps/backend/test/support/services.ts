@@ -4,8 +4,10 @@ import type {
   LedgerConfirmation,
   LedgerVerificationService,
 } from "../../src/ledger/ledger-verification.service";
+import { AnchorAttemptsService } from "../../src/batches/anchor-attempts.service";
 import { ReportsService } from "../../src/reports/reports.service";
 import {
+  AnchorAttemptEntity,
   AnchorRecordEntity,
   CollectionEventEntity,
   CollectorEntity,
@@ -83,4 +85,16 @@ export function stubLedgerVerification(
     ...confirmation,
   };
   return { verify: async () => answer } as unknown as LedgerVerificationService;
+}
+
+/**
+ * Attempt recording backed by the test database.
+ *
+ * Not a stub: the batch suite's backoff assertions depend on real rows, and a
+ * fake would make the queue-filtering tests assert on the fake's arithmetic
+ * rather than on the service's.
+ */
+export function buildAnchorAttemptsService(dataSource: DataSource): AnchorAttemptsService {
+  stubRequiredEnv();
+  return new AnchorAttemptsService(dataSource.getRepository(AnchorAttemptEntity), dataSource);
 }

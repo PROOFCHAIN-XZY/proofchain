@@ -163,7 +163,39 @@ export interface AuditReport {
   attestationNotes: string[];
 }
 
+export interface AwaitingAnchor {
+  batchId: string;
+  sealedAt: string | null;
+  totalWeightKg: number;
+  eventCount: number;
+  failedAttempts: number;
+  lastOutcome: "failed" | "unverified" | "succeeded" | null;
+  lastAttemptAt: string | null;
+  lastDetail: string | null;
+  nextAttemptAt: string | null;
+  stuck: boolean;
+}
+
+export interface AnchorHealth {
+  checkedAt: string;
+  awaitingAnchor: number;
+  stuck: number;
+  unanchoredWeightKg: number;
+  batches: AwaitingAnchor[];
+}
+
+export interface AnchorAttempt {
+  id: string;
+  attemptNumber: number;
+  outcome: "failed" | "unverified" | "succeeded";
+  detail: string | null;
+  stellarTxHash: string | null;
+  occurredAt: string;
+}
+
 export const api = {
+  anchorHealth: () => request<AnchorHealth>("/batches/anchor-health"),
+  anchorAttempts: (id: string) => request<AnchorAttempt[]>(`/batches/${id}/anchor-attempts`),
   listBatches: (status?: string) =>
     request<Batch[]>(`/batches${status ? `?status=${status}` : ""}`),
   getBatch: (id: string) => request<Batch>(`/batches/${id}`),

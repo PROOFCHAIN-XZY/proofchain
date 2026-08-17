@@ -310,7 +310,50 @@ curl http://localhost:3000/batches/<batch_id>/report | jq '.'
 curl http://localhost:3000/batches/pending-anchor | jq '.'
 ```
 
-The anchor worker periodically polls this endpoint.
+The anchor worker periodically polls this endpoint. Batches in backoff after a failed attempt are deliberately absent — a batch missing from this list is not necessarily anchored.
+
+### Check Whether Anchoring Is Healthy
+
+This is the endpoint to reach for first when a batch has not anchored. It requires an operator token.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3000/batches/anchor-health | jq '{awaitingAnchor, stuck, unanchoredWeightKg}'
+```
+
+- `awaitingAnchor` — sealed batches with no anchor. A small number that keeps changing is normal.
+- `stuck` — batches that have failed six or more times. **This is the number to alert on.** Anything above zero needs a person.
+- `unanchoredWeightKg` — the same fact in business units: weight that cannot be sold until a root reaches the ledger.
+
+For the detail on a specific batch:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3000/batches/anchor-health | jq '.batches[] | select(.stuck)'
+```
+
+`lastDetail` carries the error verbatim from Horizon or the Stellar SDK. The common causes:
+
+| `lastDetail` contains | Cause | Fix |
+|---|---|---|
+| `op_underfunded`, `tx_insufficient_balance` | The anchor account has run out of XLM | Re-fund via Friendbot (testnet) — see [Stellar Setup](#stellar-setup) |
+| `tx_insufficient_fee` | Network base fee has risen above `BASE_FEE` | Raise the fee in `services/anchor-worker/src/anchor.ts` and redeploy the worker |
+| `tx_bad_seq` | Two workers sharing one Stellar key | Run exactly one anchor worker per key |
+| `504`, `timed out`, `ECONNREFUSED` | Horizon unreachable | Usually transient; backoff will retry. Check `STELLAR_HORIZON_URL` |
+| `unauthorised (401)` | `ANCHOR_WORKER_TOKEN` mismatch | Make the worker's and the backend's values identical |
+
+### Recover a Stuck Batch
+
+Nothing needs to be reset by hand. Once the underlying cause is fixed, the batch is retried on its next scheduled attempt — at most an hour away, since backoff is capped.
+
+To confirm it recovered:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3000/batches/anchor-health | jq '.stuck'
+```
+
+The batch leaves the list entirely once anchored. Its failure history is kept and remains visible on the batch page in the dashboard, which is intentional: "anchored, eventually, after nine failures" is a different operational fact from "anchored first time" and it should not be erased by the recovery.
 
 ### View Event Details
 
@@ -389,6 +432,12 @@ Then retry your docker command.
    ```
 2. Verify the Stellar tx manually: `curl https://horizon-testnet.stellar.org/transactions/<tx_hash> | jq '.memo'`
 3. Check the backend's anchor endpoint is reachable and has the correct `x-anchor-worker-token` header.
+4. The worker now reports this case as an `unverified` attempt with the transaction hash. Find it with:
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" \
+     http://localhost:3000/batches/anchor-health | jq '.batches[] | select(.lastOutcome == "unverified")'
+   ```
+   An `unverified` attempt is more serious than a plain failure: a transaction was submitted and may have cost a real fee, and it may still settle. Check the hash on Horizon before assuming the anchor did not happen — anchoring the same root twice is wasteful but harmless, whereas recording an anchor that was never confirmed is not.
 
 ### "TypeScript build errors"
 
@@ -462,19 +511,150 @@ npm run db:up
 # Then restart services in terminals
 ```
 
-## Production Deployment
+## Deploying the pilot (Neon + Render)
 
-**This is a testnet pilot. DO NOT deploy to production without:**
+This deploys the **testnet pilot**: a hosted instance operators and auditors can
+reach, anchoring to the Stellar test network. It is not a production credit
+issuer — see [Before calling it production](#before-calling-it-production).
 
-1. Security audit of the signing contract and integrity checks
-2. Stellar public network account setup (not testnet)
-3. Verra accreditation as a carbon credit issuer
-4. HTTPS/TLS for all endpoints
-5. Rate limiting and API key management
-6. Database backups and disaster recovery plan
-7. Monitoring and alerting (logs, metrics, uptime)
+Two processes run: the **API** and the **anchor worker**. Both are built from
+the one `Dockerfile` at the repo root and differ only in their command, so they
+cannot drift apart on how a Merkle leaf is hashed. `render.yaml` declares both.
 
-For now, testnet is the safe zone for development and testing.
+### 1. Database (Neon)
+
+Create a project and copy the connection string. It ends in `?sslmode=require`;
+keep that. Use the **pooled** string for the API.
+
+The first migration installs the `uuid-ossp` extension itself, so an empty Neon
+database needs no preparation.
+
+### 2. Secrets
+
+Generate two, and keep them out of the repository:
+
+```bash
+openssl rand -hex 32   # JWT_SECRET
+openssl rand -hex 32   # ANCHOR_WORKER_TOKEN
+```
+
+`ANCHOR_WORKER_TOKEN` must be **identical** on the API and the worker. It
+authorises `POST /batches/:id/anchor`; if they disagree, every write-back is
+rejected with a 401 and batches sit sealed but unanchored — visibly stuck rather
+than silently wrong, but stuck all the same.
+
+`STELLAR_SECRET` is the funded testnet account that signs anchor transactions.
+Generate one with `npm run stellar:account`. The worker needs it; the API does not.
+
+### 3. Apply the blueprint
+
+Point Render at the repo (Blueprints → New Blueprint Instance). It reads
+`render.yaml` and prompts for each `sync: false` value:
+
+| Variable | Service | Value |
+|---|---|---|
+| `DATABASE_URL` | api | Neon pooled connection string |
+| `ANCHOR_WORKER_TOKEN` | api + worker | the same generated token |
+| `CORS_ORIGINS` | api | dashboard and capture origins, comma-separated |
+| `STELLAR_SECRET` | worker | funded testnet secret |
+
+`JWT_SECRET` is generated by Render. `TRUST_PROXY=1` is already set — it must
+be, or `req.ip` is Render's load balancer and the login and ingest rate limits
+put every client in a single bucket.
+
+### 4. Migrate
+
+The blueprint runs migrations as a pre-deploy step, before traffic moves to the
+new build. That requires a paid instance type; on the free plan, remove
+`preDeployCommand` and run it yourself from a shell on the service:
+
+```bash
+npm run migration:run:prod -w @proofchain/backend
+```
+
+The `:prod` variants exist because a deployed image has no `ts-node` —
+devDependencies are pruned out — so the development `migration:run` cannot run
+there.
+
+### 5. Create the first administrator
+
+A migrated database has no users, and the development seed refuses to run in
+production (it hardcodes published passwords). From a shell on the API service:
+
+```bash
+ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='<a long one>' \
+  npm run admin:create:prod -w @proofchain/backend
+```
+
+Run it there rather than locally so the password never reaches a shell history
+or a CI log. Then sign in and create the remaining accounts through the API:
+
+```bash
+TOKEN=$(curl -s -X POST https://<api>/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"..."}' | jq -r .accessToken)
+
+curl -X POST https://<api>/users -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"email":"ops@example.com","password":"...","role":"operator"}'
+```
+
+Passwords must be at least 12 characters. Users change their own with
+`POST /auth/password`; an admin resets a forgotten one with
+`POST /users/:id/password` and hands it over out of band.
+
+To remove someone's access, `PATCH /users/:id {"active": false}`. It takes
+effect on their **next request** — `JwtAuthGuard` re-reads the row rather than
+trusting the token — so there is no window where a revoked operator keeps
+working until their 12-hour token expires. The API refuses to deactivate or
+demote the last active admin, and refuses to let you do either to yourself.
+
+### 6. Verify
+
+```bash
+curl https://<api>/health        # {"status":"ok","database":"up",...}
+curl https://<api>/              # {"service":"proofchain-api","health":"/health"}
+```
+
+`/docs` is deliberately 404 in production — Swagger is mounted only outside it.
+Check the boot log for a `TRUST_PROXY` warning; if one is there, the rate limits
+are not doing what you think.
+
+### Running it anywhere else
+
+Nothing above is Render-specific except `render.yaml`. Any host that runs a
+container works:
+
+```bash
+docker build -t proofchain .
+docker run -p 3000:3000 \
+  -e NODE_ENV=production -e TRUST_PROXY=1 \
+  -e DATABASE_URL='postgres://…?sslmode=require' \
+  -e JWT_SECRET=… -e ANCHOR_WORKER_TOKEN=… \
+  -e CORS_ORIGINS='https://dashboard.example.com' \
+  proofchain                                        # API
+docker run -e … proofchain node services/anchor-worker/dist/index.js   # worker
+```
+
+Keep the worker at **one instance**. Two would race to anchor the same batch;
+the backend rejects the second write-back, but the duplicate Stellar
+transaction has already been paid for by then.
+
+### Before calling it production
+
+Still outstanding, and none of it is on the deployment path:
+
+1. Security audit of the integrity checks and signing path
+2. Stellar **public** network account (this pilot is testnet)
+3. Verra accreditation as a credit issuer
+4. Photo storage — bytes are hashed but never stored, so a buyer cannot check a
+   `photoHash` against an image
+5. Shared-store rate limiting — the limiter is per-process, so it weakens as
+   soon as the API runs more than one instance
+6. Backups and restore drills (Neon's point-in-time restore is the starting
+   point, not the plan)
+7. Monitoring and alerting: logs, metrics, uptime, and an alert on batches that
+   stay sealed-but-unanchored
 
 ## Testing the capture PWA on a real phone
 

@@ -1,10 +1,20 @@
+import { resolvePostgresConnection, type PostgresConnection } from "../database/postgres-connection";
+import { parseTrustProxy, type TrustProxySetting } from "./trust-proxy";
+
 export interface AppConfig {
   nodeEnv: "development" | "test" | "production";
   port: number;
-  databaseUrl: string;
+  /** Connection URL plus the resolved TLS settings; see postgres-connection.ts. */
+  database: PostgresConnection;
   jwtSecret: string;
   jwtExpiresIn: string;
   corsOrigins: string[];
+  /**
+   * How many proxies sit in front of this service, if any. Decides whether
+   * `req.ip` — and therefore every rate limit — reflects the real client.
+   * See config/trust-proxy.ts.
+   */
+  trustProxy: TrustProxySetting;
   /**
    * Where weigh-in photo bytes are written.
    *
@@ -81,13 +91,14 @@ export function loadConfig(): AppConfig {
   return {
     nodeEnv,
     port: Number(process.env.PORT ?? 3000),
-    databaseUrl: required("DATABASE_URL"),
+    database: resolvePostgresConnection(),
     jwtSecret,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "12h",
     corsOrigins: (process.env.CORS_ORIGINS ?? "http://localhost:3001")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     photoStorageDir: process.env.PHOTO_STORAGE_DIR ?? "./var/photos",
     maxPhotoBytes: Number(process.env.MAX_PHOTO_BYTES ?? 8 * 1024 * 1024),
     maxClockSkewSeconds: Number(process.env.MAX_CLOCK_SKEW_SECONDS ?? 900),
