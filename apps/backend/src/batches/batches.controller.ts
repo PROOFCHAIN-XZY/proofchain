@@ -12,7 +12,13 @@ import {
 import { ApiOperation, ApiSecurity, ApiTags } from "@nestjs/swagger";
 import { BatchesService } from "./batches.service";
 import { AnchorWorkerGuard, Public, Roles } from "../auth/auth.module";
-import { AddEventsDto, AdvanceStatusDto, CreateBatchDto, RecordAnchorDto } from "../common/dto";
+import {
+  AddEventsDto,
+  AdvanceStatusDto,
+  CreateBatchDto,
+  RecordAnchorDto,
+  RecordAnchorFailureDto,
+} from "../common/dto";
 import type { BatchStatus } from "@proofchain/shared";
 
 @ApiTags("batches")
@@ -42,9 +48,35 @@ export class BatchesController {
     return this.batches.pendingAnchor();
   }
 
+  /**
+   * Declared before ":id" so the literal path is not swallowed by the UUID
+   * route. Operator-only: it names batches, weights and failure detail, which
+   * is more than a public verification endpoint should volunteer.
+   */
+  @Roles("admin", "operator")
+  @Get("anchor-health")
+  @ApiOperation({ summary: "Batches awaiting an anchor, with failure history" })
+  anchorHealth() {
+    return this.batches.anchorHealth();
+  }
+
   @Get(":id")
   findOne(@Param("id", ParseUUIDPipe) id: string) {
     return this.batches.findOne(id);
+  }
+
+  /**
+   * The anchoring history for one batch.
+   *
+   * Operator-only and separate from the health view: that view is a work queue
+   * and drops a batch the moment it anchors, which is exactly when someone
+   * reviewing the batch wants to know it took nine attempts to get there.
+   */
+  @Roles("admin", "operator")
+  @Get(":id/anchor-attempts")
+  @ApiOperation({ summary: "Every recorded attempt to anchor this batch" })
+  anchorAttempts(@Param("id", ParseUUIDPipe) id: string) {
+    return this.batches.anchorAttemptsFor(id);
   }
 
   @Get(":id/events")
@@ -96,6 +128,35 @@ export class BatchesController {
   @ApiOperation({ summary: "Anchor worker writes back the Stellar transaction" })
   recordAnchor(@Param("id", ParseUUIDPipe) id: string, @Body() dto: RecordAnchorDto) {
     return this.batches.recordAnchor(id, dto);
+  }
+
+  /**
+   * The worker reporting that an attempt produced no anchor.
+   *
+   * Guarded by the same shared token as the anchor write-back, and for a
+   * sharper reason: an anonymous caller able to post failures could park every
+   * sealed batch in maximum backoff and stop anchoring altogether, quietly,
+   * while the pipeline continued to look merely slow.
+   */
+  @Public()
+  @UseGuards(AnchorWorkerGuard)
+  @ApiSecurity("anchor-worker-token")
+  @Post(":id/anchor-failure")
+  @ApiOperation({ summary: "Anchor worker reports an attempt that produced no anchor" })
+  recordAnchorFailure(@Param("id", ParseUUIDPipe) id: string, @Body() dto: RecordAnchorFailureDto) {
+    return this.batches.recordAnchorFailure(id, dto);
+  }
+
+  /**
+   * Public for the same reason the proof endpoint is: an auditor must be able
+   * to check the anchor without an account here. Separate from the per-event
+   * proof so checking a hundred events costs one Horizon read, not a hundred.
+   */
+  @Public()
+  @Get(":id/ledger")
+  @ApiOperation({ summary: "Re-read this batch's anchor off the Stellar ledger" })
+  ledger(@Param("id", ParseUUIDPipe) id: string) {
+    return this.batches.ledgerStatus(id);
   }
 
   /** Open to anyone holding the ids: verification must not require our blessing. */

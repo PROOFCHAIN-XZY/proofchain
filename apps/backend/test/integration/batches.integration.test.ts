@@ -10,6 +10,7 @@ import {
   CollectionEventEntity,
 } from "../../src/database/entities";
 import { createTestDataSource, resetTables } from "./database";
+import { buildAnchorAttemptsService, stubLedgerVerification } from "../support/services";
 import { at, insertEvent, seedFixtures, type Fixtures } from "./fixtures";
 
 /**
@@ -43,6 +44,12 @@ beforeEach(async () => {
     dataSource.getRepository(CollectionEventEntity),
     dataSource.getRepository(AnchorRecordEntity),
     dataSource,
+    // The ledger read-back is stubbed: these tests are about the Merkle root
+    // and the transaction boundaries around sealing, and a real Horizon call
+    // would make every one of them depend on a public network being up.
+    stubLedgerVerification(),
+    // Not stubbed — the pending-anchor assertions depend on real attempt rows.
+    buildAnchorAttemptsService(dataSource),
   );
 });
 

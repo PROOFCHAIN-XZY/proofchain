@@ -310,7 +310,50 @@ curl http://localhost:3000/batches/<batch_id>/report | jq '.'
 curl http://localhost:3000/batches/pending-anchor | jq '.'
 ```
 
-The anchor worker periodically polls this endpoint.
+The anchor worker periodically polls this endpoint. Batches in backoff after a failed attempt are deliberately absent — a batch missing from this list is not necessarily anchored.
+
+### Check Whether Anchoring Is Healthy
+
+This is the endpoint to reach for first when a batch has not anchored. It requires an operator token.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3000/batches/anchor-health | jq '{awaitingAnchor, stuck, unanchoredWeightKg}'
+```
+
+- `awaitingAnchor` — sealed batches with no anchor. A small number that keeps changing is normal.
+- `stuck` — batches that have failed six or more times. **This is the number to alert on.** Anything above zero needs a person.
+- `unanchoredWeightKg` — the same fact in business units: weight that cannot be sold until a root reaches the ledger.
+
+For the detail on a specific batch:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3000/batches/anchor-health | jq '.batches[] | select(.stuck)'
+```
+
+`lastDetail` carries the error verbatim from Horizon or the Stellar SDK. The common causes:
+
+| `lastDetail` contains | Cause | Fix |
+|---|---|---|
+| `op_underfunded`, `tx_insufficient_balance` | The anchor account has run out of XLM | Re-fund via Friendbot (testnet) — see [Stellar Setup](#stellar-setup) |
+| `tx_insufficient_fee` | Network base fee has risen above `BASE_FEE` | Raise the fee in `services/anchor-worker/src/anchor.ts` and redeploy the worker |
+| `tx_bad_seq` | Two workers sharing one Stellar key | Run exactly one anchor worker per key |
+| `504`, `timed out`, `ECONNREFUSED` | Horizon unreachable | Usually transient; backoff will retry. Check `STELLAR_HORIZON_URL` |
+| `unauthorised (401)` | `ANCHOR_WORKER_TOKEN` mismatch | Make the worker's and the backend's values identical |
+
+### Recover a Stuck Batch
+
+Nothing needs to be reset by hand. Once the underlying cause is fixed, the batch is retried on its next scheduled attempt — at most an hour away, since backoff is capped.
+
+To confirm it recovered:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3000/batches/anchor-health | jq '.stuck'
+```
+
+The batch leaves the list entirely once anchored. Its failure history is kept and remains visible on the batch page in the dashboard, which is intentional: "anchored, eventually, after nine failures" is a different operational fact from "anchored first time" and it should not be erased by the recovery.
 
 ### View Event Details
 
@@ -389,6 +432,12 @@ Then retry your docker command.
    ```
 2. Verify the Stellar tx manually: `curl https://horizon-testnet.stellar.org/transactions/<tx_hash> | jq '.memo'`
 3. Check the backend's anchor endpoint is reachable and has the correct `x-anchor-worker-token` header.
+4. The worker now reports this case as an `unverified` attempt with the transaction hash. Find it with:
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" \
+     http://localhost:3000/batches/anchor-health | jq '.batches[] | select(.lastOutcome == "unverified")'
+   ```
+   An `unverified` attempt is more serious than a plain failure: a transaction was submitted and may have cost a real fee, and it may still settle. Check the hash on Horizon before assuming the anchor did not happen — anchoring the same root twice is wasteful but harmless, whereas recording an anchor that was never confirmed is not.
 
 ### "TypeScript build errors"
 

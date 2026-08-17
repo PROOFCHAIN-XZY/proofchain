@@ -34,10 +34,53 @@ export interface SyncOutcome {
   synced: number;
   rejected: number;
   failed: number;
+  /** Photos successfully handed over after their weigh-in was accepted. */
+  photosUploaded: number;
+}
+
+/**
+ * Send the photo bytes for an accepted weigh-in.
+ *
+ * Separate from the weigh-in POST on purpose. The signed record is a few
+ * hundred bytes and the photo is several megabytes; on a field link the record
+ * must be able to land on its own, because it is the part that carries the
+ * weight, the location and the signature. Sending them together would mean a
+ * collector on a bad connection ends the day with nothing recorded at all.
+ *
+ * The server accepts these bytes only if they hash to the photoHash already
+ * signed into the payload, so no credential is needed and a corrupted upload
+ * is rejected rather than stored.
+ */
+export async function uploadPhoto(eventId: string, photo: Blob): Promise<void> {
+  const controller = new AbortController();
+  // Longer than the weigh-in timeout: this is megabytes over a link that may
+  // be barely usable, and giving up early would retry the whole transfer.
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+
+  try {
+    const res = await fetch(`${backendUrl()}/events/${eventId}/photo`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: photo,
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      throw new Error(`photo upload failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function syncPending(): Promise<SyncOutcome> {
-  const outcome: SyncOutcome = { attempted: 0, synced: 0, rejected: 0, failed: 0 };
+  const outcome: SyncOutcome = {
+    attempted: 0,
+    synced: 0,
+    rejected: 0,
+    failed: 0,
+    photosUploaded: 0,
+  };
 
   if (!navigator.onLine) return outcome;
 
@@ -64,13 +107,21 @@ export async function syncPending(): Promise<SyncOutcome> {
         continue;
       }
 
+      // The weigh-in is safe on the server before the photo is attempted. The
+      // record is marked synced either way: a missing photo is a weaker piece
+      // of evidence, not a lost tonne, and re-posting the weigh-in to retry the
+      // photo would be spending a field connection on a duplicate.
+      const photoUploaded = await tryUploadPhoto(record, response.eventId);
+
       await queue.update(record.id, {
         status: "synced",
         serverEventId: response.eventId,
         syncedAt: new Date().toISOString(),
-        lastError: null,
+        photoUploadedAt: photoUploaded ? new Date().toISOString() : null,
+        lastError: photoUploaded ? null : "weigh-in synced; photo upload still pending",
       });
       outcome.synced += 1;
+      if (photoUploaded) outcome.photosUploaded += 1;
     } catch (error) {
       await queue.update(record.id, {
         status: "queued",
@@ -81,7 +132,29 @@ export async function syncPending(): Promise<SyncOutcome> {
     }
   }
 
+  // Second pass: photos whose weigh-in landed on an earlier sync but whose
+  // bytes did not. These are invisible to pending(), so without this pass a
+  // photo that failed once would never be retried.
+  for (const record of await queue.pendingPhotos()) {
+    if (await tryUploadPhoto(record, record.serverEventId!)) {
+      await queue.update(record.id, { photoUploadedAt: new Date().toISOString(), lastError: null });
+      outcome.photosUploaded += 1;
+    }
+  }
+
   return outcome;
+}
+
+/** Never throws: a failed photo must not undo an accepted weigh-in. */
+async function tryUploadPhoto(record: QueuedWeighIn, eventId: string): Promise<boolean> {
+  if (!record.photo || record.photoUploadedAt) return Boolean(record.photoUploadedAt);
+
+  try {
+    await uploadPhoto(eventId, record.photo);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function failureSummary(response: IngestResponse): string {

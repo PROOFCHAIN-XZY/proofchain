@@ -94,7 +94,13 @@ export interface AuditReport {
     createdAt: string;
   };
   hub: { id: string; code: string; name: string; lat: number; lng: number };
-  collectors: { id: string; name: string; kycLevel: string; eventCount: number; weightKg: number }[];
+  collectors: {
+    id: string;
+    name: string;
+    kycLevel: string;
+    eventCount: number;
+    weightKg: number;
+  }[];
   chainOfCustody: {
     id: string;
     fromParty: string;
@@ -129,6 +135,14 @@ export interface AuditReport {
     dataEntryKey: string;
     anchoredAt: string;
     explorerUrl: string;
+    /** What Horizon said when the report was rendered; null means we could not ask. */
+    ledgerConfirmation: {
+      rootMatchesLedger: boolean | null;
+      memoMatches: boolean;
+      dataEntryMatches: boolean;
+      checkedAt: string;
+      detail: string;
+    };
   } | null;
   events: {
     eventId: string;
@@ -139,6 +153,9 @@ export interface AuditReport {
     lng: number;
     capturedAt: string;
     photoHash: string;
+    photoAvailable: boolean;
+    /** Relative to the backend origin; null until the bytes are uploaded. */
+    photoUrl: string | null;
     payloadHash: string;
     leaf: string;
     integrityOutcome: string;
@@ -146,7 +163,39 @@ export interface AuditReport {
   attestationNotes: string[];
 }
 
+export interface AwaitingAnchor {
+  batchId: string;
+  sealedAt: string | null;
+  totalWeightKg: number;
+  eventCount: number;
+  failedAttempts: number;
+  lastOutcome: "failed" | "unverified" | "succeeded" | null;
+  lastAttemptAt: string | null;
+  lastDetail: string | null;
+  nextAttemptAt: string | null;
+  stuck: boolean;
+}
+
+export interface AnchorHealth {
+  checkedAt: string;
+  awaitingAnchor: number;
+  stuck: number;
+  unanchoredWeightKg: number;
+  batches: AwaitingAnchor[];
+}
+
+export interface AnchorAttempt {
+  id: string;
+  attemptNumber: number;
+  outcome: "failed" | "unverified" | "succeeded";
+  detail: string | null;
+  stellarTxHash: string | null;
+  occurredAt: string;
+}
+
 export const api = {
+  anchorHealth: () => request<AnchorHealth>("/batches/anchor-health"),
+  anchorAttempts: (id: string) => request<AnchorAttempt[]>(`/batches/${id}/anchor-attempts`),
   listBatches: (status?: string) =>
     request<Batch[]>(`/batches${status ? `?status=${status}` : ""}`),
   getBatch: (id: string) => request<Batch>(`/batches/${id}`),

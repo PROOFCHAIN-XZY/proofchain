@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DataSource } from "typeorm";
 import { ALL_ENTITIES } from "../../src/database/entities";
 import { InitialSchema1786190303177 } from "../../src/database/migrations/1786190303177-InitialSchema";
+import { AnchorAttempts1786400000000 } from "../../src/database/migrations/1786400000000-AnchorAttempts";
 
 /**
  * Migrations are listed as classes rather than as the `src/**\/migrations/*.ts`
@@ -16,7 +17,7 @@ import { InitialSchema1786190303177 } from "../../src/database/migrations/178619
  * `assertAllMigrationsRegistered` fails loudly when one is not — a test suite
  * quietly validating yesterday's schema is worse than one that will not start.
  */
-const MIGRATIONS = [InitialSchema1786190303177];
+const MIGRATIONS = [InitialSchema1786190303177, AnchorAttempts1786400000000];
 
 function assertAllMigrationsRegistered(): void {
   const directory = join(__dirname, "../../src/database/migrations");
