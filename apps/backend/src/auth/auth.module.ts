@@ -1,5 +1,6 @@
 import {
   CanActivate,
+  createParamDecorator,
   ExecutionContext,
   Injectable,
   Module,
@@ -32,6 +33,26 @@ export interface JwtPayload {
   email: string;
   role: Role;
 }
+
+/**
+ * The caller's verified token claims, as set by `JwtAuthGuard`.
+ *
+ * Only ever use this for *who is asking*. It must not be used as a source of
+ * truth about the account's current state: a token is a 12-hour snapshot, so a
+ * user deactivated or demoted five minutes ago still presents a token saying
+ * otherwise. Anything that depends on current state reads the row.
+ */
+export const CurrentUser = createParamDecorator(
+  (_data: unknown, context: ExecutionContext): JwtPayload => {
+    const request = context.switchToHttp().getRequest<{ user?: JwtPayload }>();
+    if (!request.user) {
+      // Reachable only by putting @CurrentUser() on a @Public() route, where no
+      // guard ever ran. That is a programming error, not a request problem.
+      throw new UnauthorizedException("no authenticated user on this request");
+    }
+    return request.user;
+  },
+);
 
 @Injectable()
 export class AuthService {
@@ -74,6 +95,7 @@ export class JwtAuthGuard implements CanActivate {
   constructor(
     private readonly jwt: JwtService,
     private readonly reflector: Reflector,
+    @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -90,17 +112,43 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException("missing bearer token");
     }
 
+    let claims: JwtPayload;
     try {
-      request.user = await this.jwt.verifyAsync<JwtPayload>(header.slice(7));
+      claims = await this.jwt.verifyAsync<JwtPayload>(header.slice(7));
     } catch {
       throw new UnauthorizedException("invalid or expired token");
     }
+
+    /*
+     * The token proves who signed in; the row decides what they may do now.
+     *
+     * There is no token revocation here, so a 12-hour token issued before an
+     * account was disabled would otherwise keep working for the rest of its
+     * life — which would make "deactivate this user" a suggestion rather than a
+     * control, exactly when it matters most (a departed operator, a leaked
+     * laptop). Same for a demotion: the role is read from the row so revoking
+     * admin takes effect on the next request, not at the next login.
+     *
+     * The cost is one primary-key lookup per authenticated request. Nothing on
+     * the hot ingest path pays it: `POST /events` and the public report routes
+     * are @Public() and return above.
+     */
+    const user = await this.users.findOne({
+      where: { id: claims.sub },
+      select: { id: true, email: true, role: true, active: true },
+    });
+
+    if (!user || !user.active) {
+      throw new UnauthorizedException("account is no longer active");
+    }
+
+    request.user = { sub: user.id, email: user.email, role: user.role };
 
     const required = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
-    if (required?.length && !required.includes(request.user.role)) {
+    if (required?.length && !required.includes(user.role)) {
       throw new ForbiddenException(`requires role: ${required.join(" or ")}`);
     }
 
@@ -158,6 +206,10 @@ export class AnchorWorkerGuard implements CanActivate {
     }),
   ],
   providers: [AuthService, JwtAuthGuard, AnchorWorkerGuard],
-  exports: [AuthService, JwtAuthGuard, AnchorWorkerGuard, JwtModule],
+  // TypeOrmModule is re-exported so the UserEntity repository is resolvable
+  // wherever JwtAuthGuard is instantiated. AppModule registers it as a global
+  // APP_GUARD, which builds its own instance in AppModule's injector — without
+  // this the app fails to boot on an unresolvable repository dependency.
+  exports: [AuthService, JwtAuthGuard, AnchorWorkerGuard, JwtModule, TypeOrmModule],
 })
 export class AuthModule {}

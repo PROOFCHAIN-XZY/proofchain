@@ -292,12 +292,30 @@ export class BatchesService {
 
   async advanceStatus(batchId: string, to: BatchStatus): Promise<BatchEntity> {
     const batch = await this.findOne(batchId);
+
     const allowed = LEGAL_TRANSITIONS[batch.status];
     if (!allowed.includes(to)) {
       throw new ConflictException(
         `illegal transition ${batch.status} -> ${to} (allowed: ${allowed.join(", ") || "none"})`,
       );
     }
+
+    // Checked after the transition table, not before, so that moving backwards
+    // to "sealed" is still reported as the illegal transition it is. What is
+    // left here is the one case the table calls legal: open -> sealed.
+    //
+    // That step is legal in the lifecycle but cannot be taken by setting a
+    // column. Sealing means computing and freezing the root; arriving at
+    // "sealed" without one leaves a batch that cannot be added to, cannot be
+    // removed from, cannot be anchored (pendingAnchor requires a root) and
+    // cannot be sealed either, because seal() only accepts an open batch. The
+    // batch and every event in it would be stuck there permanently.
+    if (to === "sealed") {
+      throw new ConflictException(
+        "a batch is sealed by POST /batches/:id/seal, which computes and freezes its Merkle root",
+      );
+    }
+
     if (to === "processed" && !batch.merkleRoot) {
       throw new ConflictException("batch must be sealed before it can be processed");
     }
