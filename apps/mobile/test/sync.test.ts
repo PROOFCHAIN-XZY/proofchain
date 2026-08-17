@@ -32,6 +32,7 @@ function record(over: Partial<queue.QueuedWeighIn> = {}): queue.QueuedWeighIn {
     createdAt: "2026-08-08T10:00:00.000Z",
     syncedAt: null,
     serverEventId: null,
+    photoUploadedAt: null,
     ...over,
   };
 }
@@ -207,5 +208,118 @@ describe("syncPending", () => {
     });
 
     expect(urls).toEqual(["https://api.example.org"]);
+  });
+});
+
+describe("syncPending — photo upload", () => {
+  const online = { isOnline: async () => true };
+
+  it("sends the photo to the event id the server assigned", async () => {
+    const store = createMemoryStore();
+    await queue.enqueue(store, record({ photoUri: "file:///weighin.jpg" }));
+    const sent: { eventId: string; photoUri: string }[] = [];
+
+    const outcome = await syncPending(store, {
+      ...online,
+      post: async () => accepted({ eventId: "e-42" }),
+      sendPhoto: async (_url, eventId, photoUri) => {
+        sent.push({ eventId, photoUri });
+      },
+    });
+
+    expect(sent).toEqual([{ eventId: "e-42", photoUri: "file:///weighin.jpg" }]);
+    expect(outcome.photosUploaded).toBe(1);
+    expect((await queue.readAll(store))[0]!.photoUploadedAt).toEqual(expect.any(String));
+  });
+
+  it("keeps the weigh-in synced when the photo fails", async () => {
+    const store = createMemoryStore();
+    await queue.enqueue(store, record({ photoUri: "file:///weighin.jpg" }));
+
+    const outcome = await syncPending(store, {
+      ...online,
+      post: async () => accepted(),
+      sendPhoto: async () => {
+        throw new Error("connection reset");
+      },
+    });
+
+    // The tonne is recorded either way. A missing photo is weaker evidence,
+    // not unpaid work.
+    expect(outcome.synced).toBe(1);
+    expect(outcome.photosUploaded).toBe(0);
+
+    const stored = (await queue.readAll(store))[0]!;
+    expect(stored.status).toBe("synced");
+    expect(stored.photoUploadedAt).toBeNull();
+  });
+
+  it("retries a photo whose weigh-in synced on an earlier pass", async () => {
+    const store = createMemoryStore();
+    await queue.enqueue(
+      store,
+      record({
+        status: "synced",
+        serverEventId: "e-9",
+        syncedAt: "2026-08-08T11:00:00.000Z",
+        photoUri: "file:///weighin.jpg",
+      }),
+    );
+    const sent: string[] = [];
+
+    const outcome = await syncPending(store, {
+      ...online,
+      post: async () => {
+        throw new Error("pending() must not pick this record up");
+      },
+      sendPhoto: async (_url, eventId) => {
+        sent.push(eventId);
+      },
+    });
+
+    expect(sent).toEqual(["e-9"]);
+    expect(outcome.photosUploaded).toBe(1);
+    expect(outcome.attempted).toBe(0);
+  });
+
+  it("stops retrying once the photo has been accepted", async () => {
+    const store = createMemoryStore();
+    await queue.enqueue(
+      store,
+      record({
+        status: "synced",
+        serverEventId: "e-9",
+        photoUri: "file:///weighin.jpg",
+        photoUploadedAt: "2026-08-08T11:05:00.000Z",
+      }),
+    );
+
+    const outcome = await syncPending(store, {
+      ...online,
+      post: async () => accepted(),
+      sendPhoto: async () => {
+        throw new Error("must not re-upload an accepted photo");
+      },
+    });
+
+    expect(outcome.photosUploaded).toBe(0);
+  });
+
+  it("keeps a record with an outstanding photo past the retention window", async () => {
+    const store = createMemoryStore();
+    await queue.enqueue(
+      store,
+      record({
+        status: "synced",
+        serverEventId: "e-9",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        photoUri: "file:///weighin.jpg",
+      }),
+    );
+
+    // Pruning it would discard the only reference to the photo, and a phone
+    // can easily sit unused for longer than the window between shifts.
+    expect(await queue.pruneSynced(store)).toBe(0);
+    expect(await queue.readAll(store)).toHaveLength(1);
   });
 });

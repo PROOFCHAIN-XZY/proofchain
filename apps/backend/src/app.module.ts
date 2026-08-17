@@ -9,7 +9,9 @@ import { AuthController } from "./auth/auth.controller";
 import { HealthController } from "./health/health.controller";
 import { RootController } from "./health/root.controller";
 import { RegistryModule } from "./collectors/registry.module";
+import { UsersModule } from "./users/users.module";
 import { EventsModule } from "./events/events.module";
+import { PhotosModule } from "./photos/photos.module";
 import { BatchesModule } from "./batches/batches.module";
 import { CustodyModule } from "./custody/custody.module";
 import { ReportsModule } from "./reports/reports.module";
@@ -23,7 +25,11 @@ import { RateLimitGuard } from "./common/rate-limit.guard";
         const config = loadConfig();
         return {
           type: "postgres" as const,
-          url: config.databaseUrl,
+          url: config.database.url,
+          // Managed Postgres (Neon, Supabase, RDS) refuses plaintext
+          // connections. See database/postgres-connection.ts for why this is
+          // resolved there rather than left to the URL's own sslmode.
+          ssl: config.database.ssl,
           entities: ALL_ENTITIES,
           migrations: [`${__dirname}/database/migrations/*.{ts,js}`],
           // Never synchronize: this database is the evidentiary record behind
@@ -35,8 +41,10 @@ import { RateLimitGuard } from "./common/rate-limit.guard";
       },
     }),
     AuthModule,
+    UsersModule,
     RegistryModule,
     EventsModule,
+    PhotosModule,
     BatchesModule,
     CustodyModule,
     ReportsModule,

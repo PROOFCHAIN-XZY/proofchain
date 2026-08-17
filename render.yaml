@@ -1,0 +1,104 @@
+# Render blueprint: the API and the anchor worker.
+#
+# Apply it from the Render dashboard (Blueprints → New Blueprint Instance) after
+# pointing it at this repository. Both services build the SAME Dockerfile and
+# differ only in the command they run, so the backend and the worker can never
+# drift apart on how a Merkle leaf is hashed.
+#
+# Postgres is deliberately NOT declared here: the database is on Neon, which
+# keeps the evidentiary record independent of this platform account and gives
+# point-in-time restore that a Render free-tier database does not.
+#
+# Secrets are declared `sync: false`, which means Render prompts for them once
+# and stores them encrypted rather than reading them out of this file. Nothing
+# in this repository should ever hold a real secret.
+
+services:
+  # -------------------------------------------------------------------------
+  # API
+  # -------------------------------------------------------------------------
+  - type: web
+    name: proofchain-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node apps/backend/dist/main.js
+    plan: starter
+    region: frankfurt
+    healthCheckPath: /health
+
+    # Runs after the image is built and before traffic moves to it, so the
+    # schema is never behind the code that expects it. `migrationsRun` stays
+    # false in the app itself: several instances booting at once would race to
+    # apply the same migration.
+    #
+    # NOTE: preDeployCommand requires a paid instance type. On the free plan,
+    # delete these two lines and run migrations by hand from a shell instead:
+    #   npm run migration:run:prod -w @proofchain/backend
+    preDeployCommand: npm run migration:run:prod -w @proofchain/backend
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render routes through its own load balancer, so X-Forwarded-For has
+      # exactly one hop worth trusting. Without this the login and ingest rate
+      # limits would put every client in one bucket. See config/trust-proxy.ts.
+      - key: TRUST_PROXY
+        value: "1"
+      # Neon's pooled connection string, including its ?sslmode=require.
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      # Must match the worker's value below — Render cannot generate it in two
+      # places and have them agree, so it is entered once for each service.
+      - key: ANCHOR_WORKER_TOKEN
+        sync: false
+      # The dashboard and capture origins. Production honours this allowlist
+      # alone; the development loopback fallback is off.
+      - key: CORS_ORIGINS
+        sync: false
+
+  # -------------------------------------------------------------------------
+  # Anchor worker
+  # -------------------------------------------------------------------------
+  # A background worker, not a cron job: it polls for sealed-but-unanchored
+  # batches and recovers from a crash by simply asking again. Keep it at a
+  # single instance — two workers would both try to anchor the same batch, and
+  # while the backend rejects the second write-back, the duplicate Stellar
+  # transaction has already cost a fee by then.
+  - type: worker
+    name: proofchain-anchor-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node services/anchor-worker/dist/index.js
+    plan: starter
+    region: frankfurt
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The API's own https:// URL. `hostport` would be the tidier, private
+      # option, but it renders as "host:port" with no scheme and the worker
+      # builds request URLs by string concatenation — it would fail to parse
+      # before it ever reached the network. The traffic is TLS either way, and
+      # the anchor write-back carries its own token.
+      - key: BACKEND_URL
+        fromService:
+          type: web
+          name: proofchain-api
+          property: url
+      # The credential for POST /batches/:id/anchor. Set it to the SAME value
+      # as the API's ANCHOR_WORKER_TOKEN above: a mismatch means every anchor
+      # write-back is rejected with a 401 and batches silently stay unanchored.
+      - key: ANCHOR_WORKER_TOKEN
+        sync: false
+      # The ed25519 secret of the funded testnet account that pays the fee and
+      # signs the anchor transaction. Rotate it if it is ever exposed.
+      - key: STELLAR_SECRET
+        sync: false
+      - key: STELLAR_HORIZON_URL
+        value: https://horizon-testnet.stellar.org
+      - key: STELLAR_NETWORK_PASSPHRASE
+        value: "Test SDF Network ; September 2015"

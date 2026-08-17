@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { LedgerModule } from "../ledger/ledger.module";
 import {
   AnchorRecordEntity,
   BatchEntity,
@@ -13,6 +14,8 @@ import { ReportsController } from "./reports.controller";
 
 @Module({
   imports: [
+    // The report re-reads its anchor off Horizon before publishing it.
+    LedgerModule,
     TypeOrmModule.forFeature([
       BatchEntity,
       CollectionEventEntity,
