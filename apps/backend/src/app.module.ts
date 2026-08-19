@@ -15,6 +15,7 @@ import { PhotosModule } from "./photos/photos.module";
 import { BatchesModule } from "./batches/batches.module";
 import { CustodyModule } from "./custody/custody.module";
 import { ReportsModule } from "./reports/reports.module";
+import { MaterialsModule } from "./materials/materials.module";
 import { RateLimitGuard } from "./common/rate-limit.guard";
 
 @Module({
@@ -48,6 +49,7 @@ import { RateLimitGuard } from "./common/rate-limit.guard";
     BatchesModule,
     CustodyModule,
     ReportsModule,
+    MaterialsModule,
   ],
   controllers: [RootController, AuthController, HealthController],
   providers: [

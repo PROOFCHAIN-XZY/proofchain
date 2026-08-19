@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,8 +16,14 @@ import type { DeviceIdentity, DeviceMeta } from "../lib/identity";
 import { signWeighIn } from "../lib/identity";
 import { enqueue, type QueuedWeighIn } from "../lib/queue";
 import { appStore, currentFix, hashPhotoFile, randomNonce } from "../lib/native";
-
-const MATERIALS: MaterialType[] = ["PET", "HDPE", "LDPE", "PP", "MIXED"];
+import { getBackendUrl } from "../lib/api";
+import {
+  fallbackCatalogue,
+  loadCatalogue,
+  reconcileSelection,
+  refreshCatalogue,
+  type Catalogue,
+} from "../lib/materials";
 
 interface Props {
   identity: DeviceIdentity;
@@ -38,9 +44,45 @@ export function CaptureScreen({ identity, device, onCaptured }: Props) {
   const camera = useRef<CameraView>(null);
 
   const [weight, setWeight] = useState("");
-  const [material, setMaterial] = useState<MaterialType>("PET");
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<string | null>(null);
+
+  /**
+   * The catalogue starts as the compiled-in fallback so the picker has something
+   * to render on the very first frame, then is replaced by the cached list and,
+   * if there is a connection, by the operator's current one.
+   */
+  const [catalogue, setCatalogue] = useState<Catalogue>(() => fallbackCatalogue());
+  const [material, setMaterial] = useState<MaterialType>(() => fallbackCatalogue().pickable[0].code);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const origin = await getBackendUrl(appStore);
+      // Cache first so the picker updates without waiting on the network, then
+      // the network. On a dead link the second call returns the cached list
+      // again, so this is one extra render, not a flicker back to defaults.
+      const cached = await loadCatalogue(appStore, origin);
+      if (cancelled) return;
+      setCatalogue(cached);
+      setMaterial((current) => reconcileSelection(cached, current));
+
+      const fresh = await refreshCatalogue(appStore, origin);
+      if (cancelled) return;
+      setCatalogue(fresh);
+      setMaterial((current) => reconcileSelection(fresh, current));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selected = useMemo(
+    () => catalogue.all.find((m) => m.code === material) ?? null,
+    [catalogue, material],
+  );
 
   const weightKg = useMemo(() => Number.parseFloat(weight.replace(",", ".")), [weight]);
   const weightValid = Number.isFinite(weightKg) && weightKg > 0 && weightKg <= 500;
@@ -142,21 +184,51 @@ export function CaptureScreen({ identity, device, onCaptured }: Props) {
         <Text style={styles.unit}>kg</Text>
       </View>
 
-      <Text style={styles.label}>MATERIAL</Text>
+      <View style={styles.labelRow}>
+        <Text style={styles.label}>MATERIAL</Text>
+        {catalogue.isFallback ? <Text style={styles.labelNote}>default list</Text> : null}
+      </View>
       <View style={styles.materials}>
-        {MATERIALS.map((m) => {
-          const active = m === material;
+        {catalogue.pickable.map((m) => {
+          const active = m.code === material;
           return (
             <Pressable
-              key={m}
-              onPress={() => setMaterial(m)}
+              key={m.code}
+              onPress={() => setMaterial(m.code)}
               style={[styles.chip, active && styles.chipActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={m.description ? `${m.name}. ${m.description}` : m.name}
             >
-              <Text style={[styles.chipText, active && styles.chipTextActive]}>{m}</Text>
+              {/* Name over code, not code alone: a collector recognises "Milk
+                  jugs, crates" faster than "HDPE", but the code is what gets
+                  signed and appears in the audit report, so it stays visible. */}
+              <Text style={[styles.chipText, active && styles.chipTextActive]}>{m.name}</Text>
+              {m.name === m.code ? null : (
+                <Text style={[styles.chipCode, active && styles.chipCodeActive]}>{m.code}</Text>
+              )}
             </Pressable>
           );
         })}
       </View>
+      {selected?.description ? <Text style={styles.hint}>{selected.description}</Text> : null}
+
+      {/* The products this material covers. Tags rather than a sentence: a
+          collector is matching the object in their hand against a list, and
+          separate tags survive a glance where prose has to be read. */}
+      {selected && selected.examples.length > 0 ? (
+        <View
+          style={styles.products}
+          accessible
+          accessibilityLabel={`Counted as ${selected.name}: ${selected.examples.join(", ")}`}
+        >
+          {selected.examples.map((example) => (
+            <View key={example} style={styles.product}>
+              <Text style={styles.productText}>{example}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       <Pressable
         style={[styles.primary, (!weightValid || busy) && styles.primaryDisabled]}
@@ -230,6 +302,36 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
   chipText: { color: colors.textMuted, fontSize: 15, fontWeight: "700" },
   chipTextActive: { color: colors.onAccent },
+  /** The signed code, under the human name. */
+  chipCode: {
+    color: colors.textFaint,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.6,
+    marginTop: 1,
+  },
+  // textFaint is tuned for the dark surface and disappears on the accent fill.
+  chipCodeActive: { color: colors.onAccent, opacity: 0.75 },
+
+  products: { flexDirection: "row", flexWrap: "wrap", gap: space.xs, marginTop: space.sm },
+  product: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    paddingHorizontal: space.sm,
+    paddingVertical: 3,
+  },
+  productText: { color: colors.textMuted, fontSize: 12, fontWeight: "600" },
+
+  labelRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between" },
+  labelNote: { ...type.label, color: colors.textFaint, marginTop: space.md },
+  /** Field guidance for the selected material: what actually counts as it. */
+  hint: {
+    color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: space.sm,
+  },
 
   primary: {
     marginTop: space.lg,

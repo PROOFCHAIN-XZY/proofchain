@@ -11,6 +11,7 @@ export default defineConfig({
       "@shared/canonical": resolve(__dirname, "../../packages/shared/src/canonical-core.ts"),
       "@shared/types": resolve(__dirname, "../../packages/shared/src/types.ts"),
       "@shared/geo": resolve(__dirname, "../../packages/shared/src/geo.ts"),
+      "@shared/materials": resolve(__dirname, "../../packages/shared/src/materials.ts"),
     },
   },
 });

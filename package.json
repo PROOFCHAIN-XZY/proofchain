@@ -36,7 +36,9 @@
     "e2e": "npm run e2e:dashboard && npm run e2e:capture && npm run e2e:sw",
     "e2e:sw": "node e2e/service-worker.mjs",
     "dev:capture:https": "npm run dev:https -w @proofchain/capture",
-    "hub:relocate": "npm run hub:relocate -w @proofchain/backend --"
+    "hub:relocate": "npm run hub:relocate -w @proofchain/backend --",
+    "hub:locality": "npm run hub:locality -w @proofchain/backend --",
+    "hubs:sites": "npm run hubs:sites -w @proofchain/backend --"
   },
   "devDependencies": {
     "prettier": "^3.3.3",

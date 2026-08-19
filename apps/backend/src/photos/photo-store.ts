@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { Injectable } from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
 import { loadConfig } from "../config/configuration";
 
 /**
@@ -32,7 +32,11 @@ export interface StoredPhoto {
 export class PhotoStore {
   private readonly root: string;
 
-  constructor(root?: string) {
+  /**
+   * The root override is for tests, which write into a temp directory.
+   * `@Optional()` keeps Nest from trying to inject a String for it at boot.
+   */
+  constructor(@Optional() root?: string) {
     this.root = resolve(root ?? loadConfig().photoStorageDir);
   }
 

@@ -2,13 +2,10 @@ import "reflect-metadata";
 import { config as loadDotenv } from "dotenv";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import {
-  generateDeviceKeypair,
-  privateKeyToPem,
-  publicKeyToBase64,
-} from "@proofchain/shared";
+import { generateDeviceKeypair, privateKeyToPem, publicKeyToBase64 } from "@proofchain/shared";
 import { AppDataSource } from "./data-source";
 import { CollectorEntity, DeviceEntity, HubEntity, UserEntity } from "./entities";
+import { findHubLocation, formatHubLocations } from "./hub-locations";
 import { AuthService } from "../auth/auth.module";
 
 loadDotenv();
@@ -86,10 +83,21 @@ async function seed(): Promise<void> {
   // The pilot hub is Nairobi, but anyone developing elsewhere needs a hub they
   // can physically stand in — otherwise every captured weigh-in fails the
   // geofence and the app looks broken. Override without editing this file:
+  //   HUB_SITE=lagos npm run seed                              # a named site
   //   HUB_LAT=9.06035 HUB_LNG=7.46783 HUB_GEOFENCE_M=500 npm run seed
-  // An existing hub is left alone; use `npm run hub:relocate` to move one.
-  const hubLat = Number(process.env.HUB_LAT ?? -1.286389);
-  const hubLng = Number(process.env.HUB_LNG ?? 36.817223);
+  // HUB_LAT/HUB_LNG win over HUB_SITE, so an exact coordinate is never
+  // second-guessed by a city centre. `npm run hub:relocate -- --list` prints the
+  // site keys. An existing hub is left alone; use hub:relocate to move one.
+  const site = process.env.HUB_SITE ? findHubLocation(process.env.HUB_SITE) : null;
+  if (process.env.HUB_SITE && !site) {
+    throw new Error(
+      `HUB_SITE "${process.env.HUB_SITE}" is not a known site. Known sites:\n\n` +
+        formatHubLocations(),
+    );
+  }
+
+  const hubLat = Number(process.env.HUB_LAT ?? site?.lat ?? -1.286389);
+  const hubLng = Number(process.env.HUB_LNG ?? site?.lng ?? 36.817223);
   const hubFence = Number(process.env.HUB_GEOFENCE_M ?? 300);
 
   if (!Number.isFinite(hubLat) || hubLat < -90 || hubLat > 90) {
@@ -102,12 +110,19 @@ async function seed(): Promise<void> {
     throw new Error(`HUB_GEOFENCE_M must be a positive number: ${process.env.HUB_GEOFENCE_M}`);
   }
 
-  let hub = await hubs.findOne({ where: { code: "NBO-01" } });
+  // A hub seeded at a Nigerian site must not be called "NBO-01 — Nairobi Pilot
+  // Hub": the code and name are what operators and reports identify a site by,
+  // and a mislabelled one is a support call waiting to happen.
+  const hubCode =
+    process.env.HUB_CODE ?? (site ? `${site.key.slice(0, 3).toUpperCase()}-01` : "NBO-01");
+  const hubName = process.env.HUB_NAME ?? (site ? `${site.name} Pilot Hub` : "Nairobi Pilot Hub");
+
+  let hub = await hubs.findOne({ where: { code: hubCode } });
   if (!hub) {
     hub = await hubs.save(
       hubs.create({
-        code: "NBO-01",
-        name: "Nairobi Pilot Hub",
+        code: hubCode,
+        name: hubName,
         lat: hubLat,
         lng: hubLng,
         geofenceRadiusM: Math.round(hubFence),

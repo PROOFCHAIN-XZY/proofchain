@@ -1,4 +1,7 @@
-import { resolvePostgresConnection, type PostgresConnection } from "../database/postgres-connection";
+import {
+  resolvePostgresConnection,
+  type PostgresConnection,
+} from "../database/postgres-connection";
 import { parseTrustProxy, type TrustProxySetting } from "./trust-proxy";
 
 export interface AppConfig {
@@ -60,6 +63,28 @@ export interface AppConfig {
    * "public to the internet".
    */
   anchorWorkerToken: string;
+  /**
+   * Reverse-geocoding endpoint used to put a human place name on a hub.
+   *
+   * Cosmetic by construction: the label never enters a signed payload or a
+   * Merkle leaf, because a report that could only be verified while a geocoder
+   * agreed with us would not be independently verifiable at all. Geofencing
+   * uses the hub coordinate and haversine distance, and is unaffected by
+   * whether this service ever answers.
+   */
+  nominatimUrl: string;
+  /**
+   * Who to blame for the traffic. OSM's public instance requires a genuine
+   * identifying User-Agent and blocks generic ones, so an empty value here
+   * disables reverse geocoding outright rather than risking the pilot's IP
+   * being banned by an anonymous request. Opt in by setting the variable.
+   */
+  nominatimUserAgent: string;
+  /**
+   * Ceiling on a geocoder read. Short on purpose: nothing waits on the label,
+   * so a slow third party must not hold a hub-creation request open.
+   */
+  nominatimTimeoutMs: number;
 }
 
 function required(name: string): string {
@@ -77,7 +102,9 @@ export function loadConfig(): AppConfig {
   const nodeEnv = (process.env.NODE_ENV ?? "development") as AppConfig["nodeEnv"];
   const isProduction = nodeEnv === "production";
 
-  const jwtSecret = isProduction ? required("JWT_SECRET") : (process.env.JWT_SECRET ?? "dev-secret");
+  const jwtSecret = isProduction
+    ? required("JWT_SECRET")
+    : (process.env.JWT_SECRET ?? "dev-secret");
   if (isProduction && jwtSecret === "change-me-in-production") {
     throw new Error("JWT_SECRET is still the placeholder value; set a real secret");
   }
@@ -106,5 +133,12 @@ export function loadConfig(): AppConfig {
     stellarHorizonUrl: process.env.STELLAR_HORIZON_URL ?? "https://horizon-testnet.stellar.org",
     horizonTimeoutMs: Number(process.env.HORIZON_TIMEOUT_MS ?? 8_000),
     anchorWorkerToken,
+    nominatimUrl: (process.env.NOMINATIM_URL ?? "https://nominatim.openstreetmap.org").replace(
+      /\/+$/,
+      "",
+    ),
+    // Deliberately no default. See AppConfig.nominatimUserAgent.
+    nominatimUserAgent: (process.env.NOMINATIM_USER_AGENT ?? "").trim(),
+    nominatimTimeoutMs: Number(process.env.NOMINATIM_TIMEOUT_MS ?? 5_000),
   };
 }

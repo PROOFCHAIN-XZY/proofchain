@@ -1,5 +1,6 @@
 import { Transform, Type } from "class-transformer";
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsEmail,
@@ -21,7 +22,12 @@ import {
 } from "class-validator";
 import {
   BATCH_STATUSES,
-  MATERIAL_TYPES,
+  MATERIAL_CODE_MAX_LENGTH,
+  MATERIAL_CODE_PATTERN,
+  MATERIAL_DESCRIPTION_MAX_LENGTH,
+  MATERIAL_EXAMPLE_MAX_LENGTH,
+  MATERIAL_EXAMPLES_MAX,
+  MATERIAL_NAME_MAX_LENGTH,
   type BatchStatus,
   type MaterialType,
 } from "@proofchain/shared";
@@ -32,6 +38,25 @@ import {
  */
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Material codes are validated in two stages, and both are needed.
+ *
+ * Here: the *shape*, which is all a DTO can check now that the catalogue lives in
+ * the database rather than in a compiled union. This bounds what can reach the
+ * signed-payload column at all.
+ *
+ * Then in the service: *existence* in the catalogue, via
+ * `MaterialsService.assertKnown` for ingest or `assertOpenable` for a new batch.
+ * That check needs a repository, so it cannot live in a decorator without wiring
+ * class-validator to the Nest container — and putting it in the service also lets
+ * the two paths differ, which they must: ingest accepts retired codes so an
+ * offline queue signed hours ago still lands, while opening a batch does not.
+ */
+const MaterialCode = (): PropertyDecorator =>
+  Matches(MATERIAL_CODE_PATTERN, {
+    message: "material must be 2-16 characters: uppercase letters, digits, _ or -",
+  });
 
 /**
  * Query-string booleans.
@@ -78,7 +103,7 @@ export class WeighInPayloadDto {
   @Max(100_000)
   weightKg: number;
 
-  @IsIn(MATERIAL_TYPES as unknown as string[])
+  @MaterialCode()
   material: MaterialType;
 
   @IsLatitude()
@@ -149,8 +174,75 @@ export class CreateHubDto {
 export class CreateBatchDto {
   @IsUUID() hubId: string;
 
-  @IsIn(MATERIAL_TYPES as unknown as string[])
+  @MaterialCode()
   material: MaterialType;
+}
+
+export class CreateMaterialDto {
+  /**
+   * Permanent once a device signs it. Normalised to uppercase by the service, so
+   * `pet` is accepted as input and stored as `PET` — but only the stored form
+   * ever reaches a payload.
+   */
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(MATERIAL_CODE_MAX_LENGTH)
+  @Matches(/^[A-Za-z0-9][A-Za-z0-9_-]{1,15}$/, {
+    message: "code must be 2-16 characters: letters, digits, _ or -",
+  })
+  code: string;
+
+  @IsString() @IsNotEmpty() @MaxLength(MATERIAL_NAME_MAX_LENGTH) name: string;
+
+  @IsOptional() @IsString() @MaxLength(MATERIAL_DESCRIPTION_MAX_LENGTH) description?: string;
+
+  /**
+   * The products this material is, as a collector would name them: ["Milk jugs",
+   * "Detergent bottles"].
+   *
+   * Bounded here and normalised in the service, which is where blanks, repeats
+   * and stray whitespace are dropped. Presentation only — nothing in this list
+   * is ever signed or hashed.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MATERIAL_EXAMPLES_MAX)
+  @IsString({ each: true })
+  @MaxLength(MATERIAL_EXAMPLE_MAX_LENGTH, { each: true })
+  examples?: string[];
+
+  @IsOptional() @IsBoolean() active?: boolean;
+
+  @IsOptional() @IsNumber() @Min(0) @Max(10_000) sortOrder?: number;
+}
+
+/**
+ * Note the absence of `code`. A material code is signed into weigh-in payloads
+ * and anchored on the ledger, so renaming one would invalidate the audit reports
+ * of every batch containing it. `name` is the editable label; `active: false`
+ * retires a material without touching history.
+ */
+export class UpdateMaterialDto {
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(MATERIAL_NAME_MAX_LENGTH) name?: string;
+
+  @IsOptional() @IsString() @MaxLength(MATERIAL_DESCRIPTION_MAX_LENGTH) description?: string;
+
+  /**
+   * Replaces the stored list wholesale rather than merging into it — an operator
+   * removing a wrong example must be able to, and a merge would make that
+   * impossible. Omitting the field leaves the list untouched; sending `[]`
+   * clears it.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MATERIAL_EXAMPLES_MAX)
+  @IsString({ each: true })
+  @MaxLength(MATERIAL_EXAMPLE_MAX_LENGTH, { each: true })
+  examples?: string[];
+
+  @IsOptional() @IsBoolean() active?: boolean;
+
+  @IsOptional() @IsNumber() @Min(0) @Max(10_000) sortOrder?: number;
 }
 
 export class AddEventsDto {

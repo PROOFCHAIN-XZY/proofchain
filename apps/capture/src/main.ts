@@ -1,11 +1,20 @@
 import "./styles.css";
-import { MATERIAL_TYPES, type MaterialType, type WeighInPayload } from "@shared/types";
-import { hashPhoto, loadOrCreateIdentity, randomNonce, signWeighIn } from "./lib/identity";
+import { type MaterialType, type WeighInPayload } from "@shared/types";
+import { examplesLine, materialLabel } from "@shared/materials";
+import {
+  cachedCatalogue,
+  catalogueFetchedAt,
+  isUsingFallbackCatalogue,
+  pickableMaterials,
+  refreshCatalogue,
+} from "./lib/materials";
+import { hashPhoto, loadOrCreateIdentity, randomId, randomNonce, signWeighIn } from "./lib/identity";
 import * as queue from "./lib/queue";
 import {
   backendUrl,
   enrolDevice,
   fetchCollectors,
+  fetchHubDirectory,
   fetchHubs,
   operatorLogin,
   setBackendUrl,
@@ -19,6 +28,14 @@ import {
 } from "./lib/location";
 import { connectScale, isSupported as scaleSupported, type ScaleConnection } from "./lib/scale";
 import { assessFix } from "./lib/fix-assessment";
+import {
+  fenceLabel,
+  hubChoices,
+  hubLabel,
+  mergeHubSnapshot,
+  selectHub,
+  type HubOption,
+} from "./lib/hubs";
 
 /**
  * ProofChain field capture.
@@ -40,6 +57,15 @@ interface Provisioning {
   hubLat: number;
   hubLng: number;
   geofenceRadiusM: number;
+  /**
+   * Every hub this device may switch to, captured at enrolment.
+   *
+   * A field phone holds no operator token and `/hubs` requires one, so the list
+   * cannot be fetched later — and fetching it would need signal, which this app
+   * assumes it does not have. Optional because devices enrolled before this
+   * existed have none; `hubChoices` renders their single hub instead.
+   */
+  hubs?: HubOption[];
 }
 
 const PROVISION_KEY = "proofchain.device.provisioning.v1";
@@ -48,12 +74,34 @@ const identity = loadOrCreateIdentity();
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
 let provisioning: Provisioning | null = readProvisioning();
-let material: MaterialType = "PET";
+// Whatever the catalogue offers first, not a hardcoded "PET": an operator can
+// retire PET, and defaulting to a retired code would have every collector who
+// does not notice the picker sign an unusable material all day.
+let material: MaterialType = pickableMaterials()[0].code;
 let fix: Fix | null = null;
 let photo: Blob | null = null;
 let photoHash: string | null = null;
 let scale: ScaleConnection | null = null;
 let notice: { tone: "good" | "bad" | "warn"; text: string } | null = null;
+
+/**
+ * GPS and photo are two independent sensors behind two independent permissions,
+ * and either can fail while the other works perfectly. So each gets its own
+ * status here rather than sharing the one-line `notice`: a camera that cannot be
+ * read must not erase the message explaining a denied location, a refused fix
+ * must not blank a photo already taken, and neither may leave the other's button
+ * disabled. Nothing in this section is allowed to throw past its own handler.
+ */
+interface EvidenceSlot {
+  busy: boolean;
+  message: string | null;
+  tone: "bad" | "warn" | null;
+}
+
+const idleSlot = (): EvidenceSlot => ({ busy: false, message: null, tone: null });
+
+let gpsSlot: EvidenceSlot = idleSlot();
+let photoSlot: EvidenceSlot = idleSlot();
 
 function readProvisioning(): Provisioning | null {
   const raw = localStorage.getItem(PROVISION_KEY);
@@ -77,9 +125,133 @@ function saveProvisioning(value: Provisioning): void {
 function escapeHtml(value: string): string {
   return value.replace(
     /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
   );
+}
+
+/**
+ * Anything can end up in a `catch`, including strings and `undefined`. Turn it
+ * into something worth showing a collector standing over a scale.
+ */
+function describeError(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.trim() || fallback;
+}
+
+/**
+ * Bind a control, tolerating its absence and containing its failures.
+ *
+ * Two things this replaces a bare `getElementById(...)!.addEventListener` for.
+ * A missing element used to throw mid-wiring and leave every control *after* it
+ * dead — a screen where the buttons silently do nothing is far worse than the
+ * one missing control. And an `async` handler that rejected used to surface only
+ * as an unhandled rejection in a console no collector will ever open.
+ */
+function on(
+  id: string,
+  event: string,
+  handler: (event: Event) => void | Promise<void>,
+): void {
+  const node = document.getElementById(id);
+  if (!node) return;
+
+  node.addEventListener(event, (ev) => {
+    try {
+      void Promise.resolve(handler(ev)).catch((error) => reportUnexpected(id, error));
+    } catch (error) {
+      reportUnexpected(id, error);
+    }
+  });
+}
+
+function reportUnexpected(id: string, error: unknown): void {
+  console.error(`[capture] handler for #${id} failed`, error);
+  notice = { tone: "bad", text: describeError(error, `${id} failed unexpectedly`) };
+  const current = document.querySelector(".notice");
+  if (current) current.outerHTML = noticeHtml();
+}
+
+// -------------------------------------------------------------- catalogue
+
+/**
+ * The right-hand note on the Material label.
+ *
+ * Says nothing at all in the normal case. It speaks up only when the list on
+ * screen might not be the operator's current one, because a collector choosing
+ * from a stale catalogue is choosing from something that can be rejected later.
+ */
+function catalogueStatus(): string {
+  if (isUsingFallbackCatalogue()) return "default list — not yet synced";
+
+  const fetchedAt = catalogueFetchedAt();
+  if (!fetchedAt) return "";
+
+  const ageHours = (Date.now() - new Date(fetchedAt).getTime()) / 3_600_000;
+  if (ageHours >= 24) {
+    const days = Math.floor(ageHours / 24);
+    return `list is ${days} day${days === 1 ? "" : "s"} old`;
+  }
+  return "";
+}
+
+/** Field guidance for the material currently selected, if the catalogue carries any. */
+function selectedDescription(): string | null {
+  return cachedCatalogue().find((m) => m.code === material)?.description ?? null;
+}
+
+/** The products the selected material covers, as the catalogue lists them. */
+function selectedExamples(): string[] {
+  return cachedCatalogue().find((m) => m.code === material)?.examples ?? [];
+}
+
+/**
+ * The product tags for a material.
+ *
+ * Rendered as real list items rather than folded into the guidance sentence
+ * because a collector holding a sack is matching an object against a list, not
+ * reading prose — separate tags survive being glanced at, a comma-separated
+ * clause does not.
+ */
+function productTags(examples: readonly string[]): string {
+  return examples.map((e) => `<li>${escapeHtml(e)}</li>`).join("");
+}
+
+/**
+ * Sync the guidance line to the current selection.
+ *
+ * Hidden rather than emptied when a material has no description, so the element
+ * takes no vertical space and the chips do not shift as the collector taps
+ * between materials.
+ */
+function updateMaterialHint(): void {
+  const hint = document.getElementById("material-hint");
+  if (!hint) return;
+
+  const description = selectedDescription();
+  hint.textContent = description ?? "";
+  hint.hidden = description === null;
+
+  const products = document.getElementById("material-products");
+  if (!products) return;
+
+  const examples = selectedExamples();
+  products.innerHTML = productTags(examples);
+  products.hidden = examples.length === 0;
+}
+
+/**
+ * Keep the selection valid across a catalogue refresh.
+ *
+ * An operator can retire the material a collector has selected while the app is
+ * open. Leaving it selected would let them sign a weigh-in the server accepts but
+ * that can never be batched, so the selection moves to the first available code —
+ * silently, because there is nothing for the collector to decide here.
+ */
+function reconcileSelection(): void {
+  const pickable = pickableMaterials();
+  if (!pickable.some((m) => m.code === material)) {
+    material = pickable[0].code;
+  }
 }
 
 // ---------------------------------------------------------------- rendering
@@ -106,6 +278,122 @@ function releasePhotoPreview(): void {
   photoObjectUrl = null;
 }
 
+// ------------------------------------------------------------ evidence
+
+/**
+ * The evidence field, in one place so the initial render and the in-place
+ * repaints below cannot drift apart.
+ *
+ * The two halves are addressable separately on purpose. Everything that changes
+ * when a fix arrives lives under a `gps-` id and everything that changes when a
+ * photo arrives lives under a `photo-` id, so a repaint of one provably cannot
+ * touch a node belonging to the other. The file input sits outside both: it is
+ * the handle an open camera dialog will return to, and replacing it mid-capture
+ * would drop the photo the collector just took.
+ */
+function evidenceFieldHtml(): string {
+  return `
+      <div class="field">
+        <span class="label">Evidence</span>
+        <div class="evidence">
+          <div id="photo-thumb">${photoThumbHtml()}</div>
+          <div class="meta">
+            <span><strong>GPS</strong> <span id="gps-readout">${escapeHtml(gpsReadout())}</span></span>
+            ${slotNoteHtml("gps-note", gpsSlot)}
+            <span><strong>Photo</strong> <span id="photo-readout">${escapeHtml(photoReadout())}</span></span>
+            ${slotNoteHtml("photo-note", photoSlot)}
+          </div>
+        </div>
+        <div class="row">
+          <button class="ghost" id="locate" ${gpsSlot.busy ? "disabled" : ""}>${escapeHtml(locateLabel())}</button>
+          <button class="ghost" id="shoot" ${photoSlot.busy ? "disabled" : ""}>${escapeHtml(shootLabel())}</button>
+        </div>
+        <input id="camera" type="file" accept="image/*" capture="environment" class="visually-hidden" />
+      </div>
+`;
+}
+
+function photoThumbHtml(): string {
+  return photo
+    ? `<img src="${photoPreviewUrl()}" alt="Weigh-in photo" />`
+    : `<div class="empty">no<br />photo</div>`;
+}
+
+function gpsReadout(): string {
+  if (gpsSlot.busy) return "locating…";
+  if (!fix) return "not captured";
+  return `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)} ±${fix.accuracyM} m`;
+}
+
+function photoReadout(): string {
+  if (photoSlot.busy) return "reading…";
+  // Keyed on the hash, not on the blob: a photo whose bytes could not be hashed
+  // cannot be signed, so showing it as captured would promise something commit
+  // is about to refuse.
+  if (!photoHash) return "not captured";
+  return `${photoHash.slice(0, 16)}…`;
+}
+
+function locateLabel(): string {
+  if (gpsSlot.busy) return "Locating…";
+  return fix ? "Refresh GPS" : "Get GPS fix";
+}
+
+function shootLabel(): string {
+  if (photoSlot.busy) return "Reading…";
+  return photoHash ? "Retake photo" : "Take photo";
+}
+
+function slotNoteHtml(id: string, slot: EvidenceSlot): string {
+  const tone = slot.tone ?? "bad";
+  return `<span class="slot-note" id="${id}" data-tone="${tone}" role="status"${
+    slot.message ? "" : " hidden"
+  }>${escapeHtml(slot.message ?? "")}</span>`;
+}
+
+/**
+ * Repaint one half of the evidence field in place.
+ *
+ * A full `render()` would work, but it rebuilds the entire screen — including the
+ * file input an open camera dialog is holding, and including the other sensor's
+ * nodes. Patching the four nodes that actually changed keeps the two captures
+ * genuinely independent and keeps a half-typed weight and an open dialog alive.
+ * Every lookup is null-tolerant: a repaint that races a screen change is a no-op,
+ * never a throw.
+ */
+function paintEvidence(which: "gps" | "photo"): void {
+  const set = (id: string, text: string) => {
+    const node = document.getElementById(id);
+    if (node) node.textContent = text;
+  };
+  const note = (id: string, slot: EvidenceSlot) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.textContent = slot.message ?? "";
+    node.dataset.tone = slot.tone ?? "bad";
+    node.hidden = slot.message === null;
+  };
+  const button = (id: string, label: string, busy: boolean) => {
+    const node = document.getElementById(id) as HTMLButtonElement | null;
+    if (!node) return;
+    node.textContent = label;
+    node.disabled = busy;
+  };
+
+  if (which === "gps") {
+    set("gps-readout", gpsReadout());
+    note("gps-note", gpsSlot);
+    button("locate", locateLabel(), gpsSlot.busy);
+    return;
+  }
+
+  const thumb = document.getElementById("photo-thumb");
+  if (thumb) thumb.innerHTML = photoThumbHtml();
+  set("photo-readout", photoReadout());
+  note("photo-note", photoSlot);
+  button("shoot", shootLabel(), photoSlot.busy);
+}
+
 async function render(): Promise<void> {
   // Re-rendering replaces the whole subtree, which would discard a weight the
   // collector is part-way through typing — and this runs on a 60 s sync timer, so
@@ -114,8 +402,21 @@ async function render(): Promise<void> {
   const carriedWeight = previous?.value ?? "";
   const hadFocus = previous !== null && document.activeElement === previous;
 
+  let markup: string;
+  try {
+    markup = provisioning ? await captureScreen() : provisionScreen();
+  } catch (error) {
+    // captureScreen reads the queue out of IndexedDB, which is unavailable in
+    // some private-browsing modes and can fail on a full disk. Rejecting here
+    // would leave every `void render()` call site as an unhandled rejection and
+    // freeze the screen on whatever it last showed — including a half-disabled
+    // evidence button. Keep the screen it has and say what happened instead.
+    reportUnexpected("render", error);
+    return;
+  }
+
   app.setAttribute("aria-busy", "false");
-  app.innerHTML = provisioning ? await captureScreen() : provisionScreen();
+  app.innerHTML = markup;
   provisioning ? wireCapture() : wireProvision();
 
   if (carriedWeight) {
@@ -144,9 +445,26 @@ function masthead(): string {
  * not dismissible by retrying: every weigh-in captured here will fail its GPS
  * step, so the blocker belongs on screen permanently rather than appearing only
  * after the collector has already tried.
+ *
+ * It says different things on the two screens because it means different things.
+ * On the capture screen GPS is a hard requirement and this is a blocker, so it is
+ * a red `alert`. On the pairing screen nothing at all depends on location —
+ * sign-in and enrolment are plain HTTP calls — so a red blocker there reads as
+ * "you cannot sign in", which is false and has people abandoning a working setup.
+ * It stays, because an operator deserves to know before enrolling a phone that
+ * the deployment cannot capture, but as an advisory that names what still works.
  */
-function insecureBannerHtml(): string {
+function insecureBannerHtml(scope: "capture" | "pairing" = "capture"): string {
   if (isSecureContextAvailable()) return "";
+
+  if (scope === "pairing") {
+    return `<p class="notice" data-tone="warn" role="status">${escapeHtml(
+      "Sign-in and enrolment work normally here. Note for later: this page is not " +
+        "served over HTTPS, so GPS will be blocked when capturing — reach this phone " +
+        "over HTTPS before a shift starts.",
+    )}</p>`;
+  }
+
   return `<p class="notice" data-tone="bad" role="alert">${escapeHtml(INSECURE_CONTEXT_MESSAGE)}</p>`;
 }
 
@@ -159,7 +477,7 @@ function provisionScreen(): string {
   return `
     ${masthead()}
     <main>
-      ${insecureBannerHtml()}
+      ${insecureBannerHtml("pairing")}
       <div class="field">
         <span class="label">Step 1 · Pair this phone</span>
         <p style="margin:0;font-size:0.9375rem">
@@ -222,9 +540,25 @@ async function captureScreen(): Promise<string> {
       <div class="field">
         <span class="label">
           <span>Collector</span>
-          <span>${escapeHtml(p.hubName)}</span>
         </span>
         <strong style="font-size:1.125rem">${escapeHtml(p.collectorName)}</strong>
+      </div>
+
+      <div class="field">
+        <label class="label" for="active-hub">
+          <span>Hub</span>
+          <span>${escapeHtml(fenceLabel(p.geofenceRadiusM))}</span>
+        </label>
+        <select id="active-hub">
+          ${hubChoices(p.hubs, p)
+            .map(
+              (h) =>
+                `<option value="${escapeHtml(h.id)}"${h.id === p.hubId ? " selected" : ""}>${escapeHtml(
+                  hubLabel(h),
+                )}</option>`,
+            )
+            .join("")}
+        </select>
       </div>
 
       ${noticeHtml()}
@@ -253,44 +587,61 @@ async function captureScreen(): Promise<string> {
       </div>
 
       <div class="field">
-        <span class="label">Material</span>
+        <span class="label">
+          <span>Material</span>
+          <span>${escapeHtml(catalogueStatus())}</span>
+        </span>
         <div class="chips" role="group" aria-label="Material type">
-          ${MATERIAL_TYPES.map(
-            (m) =>
-              `<button class="chip" type="button" data-material="${m}" aria-pressed="${m === material}">${m}</button>`,
-          ).join("")}
+          ${pickableMaterials()
+            .map((m) => {
+              const selected = m.code === material;
+              // The name is the label and the code is the subscript, not the
+              // other way round. A collector sorting a sack recognises "Milk
+              // jugs, crates" far faster than "HDPE" — but the code is what gets
+              // signed, so it stays visible rather than being hidden behind a
+              // friendly name nobody can cross-check against a report.
+              const sub = m.name === m.code ? "" : `<small>${escapeHtml(m.code)}</small>`;
+              return `<button
+                class="chip"
+                type="button"
+                data-material="${escapeHtml(m.code)}"
+                aria-pressed="${selected}"
+                ${(() => {
+                  // Long-press / hover text: guidance first, then the products,
+                  // so the tooltip answers "what is this?" the same way the
+                  // panel below the picker does.
+                  const parts = [m.description, examplesLine(m.examples, m.examples.length)].filter(
+                    (part): part is string => Boolean(part),
+                  );
+                  return parts.length > 0 ? `title="${escapeHtml(parts.join(" — "))}"` : "";
+                })()}
+              ><span>${escapeHtml(m.name)}</span>${sub}</button>`;
+            })
+            .join("")}
         </div>
+        <p class="hint" id="material-hint" ${selectedDescription() ? "" : "hidden"}>${escapeHtml(
+          selectedDescription() ?? "",
+        )}</p>
+        <ul
+          class="products"
+          id="material-products"
+          aria-label="Products counted as this material"
+          ${selectedExamples().length > 0 ? "" : "hidden"}
+        >${productTags(selectedExamples())}</ul>
       </div>
 
-      <div class="field">
-        <span class="label">Evidence</span>
-        <div class="evidence">
-          ${
-            photo
-              ? `<img src="${photoPreviewUrl()}" alt="Weigh-in photo" />`
-              : `<div class="empty">no<br />photo</div>`
-          }
-          <div class="meta">
-            <span><strong>GPS</strong> ${
-              fix
-                ? `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)} ±${fix.accuracyM} m`
-                : "not captured"
-            }</span>
-            <span><strong>Photo</strong> ${photoHash ? `${photoHash.slice(0, 16)}…` : "not captured"}</span>
-          </div>
-        </div>
-        <div class="row">
-          <button class="ghost" id="locate">${fix ? "Refresh GPS" : "Get GPS fix"}</button>
-          <button class="ghost" id="shoot">${photo ? "Retake photo" : "Take photo"}</button>
-        </div>
-        <input id="camera" type="file" accept="image/*" capture="environment" class="visually-hidden" />
-      </div>
+      ${evidenceFieldHtml()}
 
       <button class="action" id="commit">Sign &amp; queue weigh-in</button>
     </main>
 
     <section class="queue" aria-label="Capture queue">
       <div class="tallies">
+        ${
+          tallies["awaiting-gps"] > 0
+            ? `<span class="tally" data-kind="awaiting-gps"><b>${tallies["awaiting-gps"]}</b>held</span>`
+            : ""
+        }
         <span class="tally" data-kind="queued"><b>${tallies.queued + tallies.syncing}</b>waiting</span>
         <span class="tally" data-kind="synced"><b>${tallies.synced}</b>synced</span>
         <span class="tally" data-kind="rejected"><b>${tallies.rejected}</b>rejected</span>
@@ -307,8 +658,14 @@ async function captureScreen(): Promise<string> {
                   (r) => `
           <li data-status="${r.status}">
             <span class="record-weight">${r.payload.weightKg.toFixed(3)} kg</span>
-            <span class="meta">${r.payload.material} · ${new Date(r.createdAt).toLocaleTimeString()}</span>
-            ${r.lastError ? `<span class="record-note">${escapeHtml(r.lastError)}</span>` : ""}
+            <span class="meta">${escapeHtml(materialLabel(r.payload.material, cachedCatalogue()))} · ${new Date(r.createdAt).toLocaleTimeString()}</span>
+            ${
+              r.lastError
+                ? `<span class="record-note">${escapeHtml(r.lastError)}</span>`
+                : r.status === "awaiting-gps"
+                  ? `<span class="record-note">held — waiting for a position, take a GPS fix to send it</span>`
+                  : ""
+            }
           </li>`,
                 )
                 .join("")
@@ -328,6 +685,10 @@ function wireProvision(): void {
     notice = null;
     try {
       setBackendUrl($<HTMLInputElement>("backend").value.trim());
+      // The cached catalogue is keyed by origin, so pointing at a different
+      // backend has just invalidated it. Fetch this one's before the collector
+      // reaches the picker; a code from the old instance may not exist here.
+      void syncCatalogue();
       token = await operatorLogin(
         $<HTMLInputElement>("email").value.trim(),
         $<HTMLInputElement>("password").value,
@@ -379,6 +740,17 @@ function wireProvision(): void {
         hubLat: hub.lat,
         hubLng: hub.lng,
         geofenceRadiusM: hub.geofenceRadiusM,
+        // Snapshot every hub while an operator token is still in hand: this is
+        // the only moment the device can see the list, and it is what lets a
+        // collector move between sites later without signal or a login.
+        hubs: loadedHubs.map((h) => ({
+          id: h.id,
+          code: h.code,
+          name: h.name,
+          lat: h.lat,
+          lng: h.lng,
+          geofenceRadiusM: h.geofenceRadiusM,
+        })),
       });
 
       notice = { tone: "good", text: "Device enrolled. Ready to capture." };
@@ -391,7 +763,34 @@ function wireProvision(): void {
 }
 
 function wireCapture(): void {
-  const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+  on("active-hub", "change", (event) => {
+    const chosen = (event.target as HTMLSelectElement).value;
+    const p = provisioning!;
+
+    const assignment = selectHub(hubChoices(p.hubs, p), chosen);
+    if (!assignment) {
+      notice = {
+        tone: "bad",
+        text: "That hub is not on this device. Re-enrol to refresh the list.",
+      };
+      void render();
+      return;
+    }
+
+    saveProvisioning({ ...p, ...assignment });
+
+    // The fix on screen was judged against the previous hub's fence, so it is
+    // now an answer to a question nobody asked. Dropping it forces a fresh
+    // locate rather than letting a collector sign a Lagos weigh-in against a
+    // reading that was assessed in Nairobi.
+    fix = null;
+    gpsSlot = idleSlot();
+    notice = {
+      tone: "good",
+      text: `Capturing at ${assignment.hubName}. Take a new fix for this hub.`,
+    };
+    void render();
+  });
 
   for (const chip of document.querySelectorAll<HTMLButtonElement>("[data-material]")) {
     chip.addEventListener("click", () => {
@@ -399,45 +798,105 @@ function wireCapture(): void {
       for (const other of document.querySelectorAll<HTMLButtonElement>("[data-material]")) {
         other.setAttribute("aria-pressed", String(other === chip));
       }
+      // Patched in place rather than by re-rendering, for the same reason the
+      // pressed state above is: a full render would discard a weight the
+      // collector is part-way through typing. Anything in this field that depends
+      // on the selection has to be updated here too.
+      updateMaterialHint();
     });
   }
 
-  $<HTMLButtonElement>("locate").addEventListener("click", async () => {
-    const button = $<HTMLButtonElement>("locate");
-    button.disabled = true;
-    button.textContent = "Locating…";
+  on("locate", "click", async () => {
+    // Guarded rather than merely disabled: the button is one way in, but a
+    // double-tap that lands before the repaint must not start a second fix.
+    if (gpsSlot.busy) return;
+    gpsSlot = { busy: true, message: null, tone: null };
+    paintEvidence("gps");
+
     try {
       const candidate = await getFix();
       const assessment = assessFix(candidate, provisioning);
 
       if (assessment.usable) {
         fix = candidate;
-        notice = assessment.message ? { tone: "warn", text: assessment.message } : null;
+        gpsSlot = {
+          busy: false,
+          message: assessment.message ?? null,
+          tone: assessment.message ? "warn" : null,
+        };
+
+        // Anything captured while the GPS was still unanswered can now be signed.
+        const settled = await settleDrafts(candidate);
+        if (settled.located > 0 || settled.expired > 0) {
+          notice = {
+            tone: settled.expired > 0 ? "warn" : "good",
+            text: settled.expired
+              ? `Signed ${settled.located} held weigh-in(s); ${settled.expired} were captured too long ago to locate.`
+              : `Signed and queued ${settled.located} held weigh-in(s).`,
+          };
+          await render();
+          if (settled.located > 0) void runSync();
+        }
       } else {
         // Refused, not merely flagged: an unusable fix is not weak evidence, it
         // is no evidence. Signing one would put a coordinate into the permanent
         // record that cannot support the claim being made about it.
         fix = null;
-        notice = { tone: "bad", text: assessment.message ?? "unusable fix" };
+        gpsSlot = { busy: false, message: assessment.message ?? "unusable fix", tone: "bad" };
       }
     } catch (error) {
-      notice = { tone: "bad", text: (error as Error).message };
+      // The previous fix is deliberately left standing. A failed refresh is the
+      // absence of a newer answer, not evidence against the one already held.
+      gpsSlot = { busy: false, message: describeError(error, "could not get a fix"), tone: "bad" };
+    } finally {
+      // In `finally` so the button comes back even if the paint above throws:
+      // a stuck "Locating…" would strand the collector with no way to retry.
+      gpsSlot.busy = false;
+      paintEvidence("gps");
     }
-    void render();
   });
 
-  const camera = $<HTMLInputElement>("camera");
-  $<HTMLButtonElement>("shoot").addEventListener("click", () => camera.click());
-  camera.addEventListener("change", async () => {
+  const camera = document.getElementById("camera") as HTMLInputElement | null;
+  on("shoot", "click", () => {
+    if (photoSlot.busy || !camera) return;
+    camera.click();
+  });
+
+  camera?.addEventListener("change", async () => {
     const file = camera.files?.[0];
+    // A cancelled picker fires `change` with no file on some browsers. That is
+    // not a failure and must not clear a photo already captured.
     if (!file) return;
-    photo = file;
-    photoHash = await hashPhoto(file);
-    void render();
+
+    photoSlot = { busy: true, message: null, tone: null };
+    paintEvidence("photo");
+
+    try {
+      // Hash first, adopt second. `photo` and `photoHash` are what commit signs
+      // and what the queue uploads, so they may never disagree: a blob on screen
+      // with no hash behind it reads as captured and then fails at signing.
+      const hash = await hashPhoto(file);
+      releasePhotoPreview();
+      photo = file;
+      photoHash = hash;
+      photoSlot = { busy: false, message: null, tone: null };
+    } catch (error) {
+      // Whatever was captured before survives; this attempt simply did not land.
+      photoSlot = {
+        busy: false,
+        message: describeError(error, "could not read that photo — try again"),
+        tone: "bad",
+      };
+    } finally {
+      photoSlot.busy = false;
+      // Cleared so picking the same file twice fires `change` again. Without
+      // this, a retry after a failed read is silently ignored.
+      camera.value = "";
+      paintEvidence("photo");
+    }
   });
 
-  const pair = document.getElementById("pair");
-  pair?.addEventListener("click", async () => {
+  on("pair", "click", async () => {
     if (scale) {
       scale.disconnect();
       scale = null;
@@ -456,23 +915,46 @@ function wireCapture(): void {
     void render();
   });
 
-  $<HTMLButtonElement>("commit").addEventListener("click", commit);
-  $<HTMLButtonElement>("sync").addEventListener("click", runSync);
+  on("commit", "click", commit);
+  on("sync", "click", runSync);
 }
 
 // ---------------------------------------------------------------- actions
 
+/**
+ * Sign every draft this fix can honestly speak for, and send them.
+ *
+ * Called the moment a usable fix lands. Drafts too old for the window come back
+ * `expired` and stay unsent with an explanation on the record — surfaced rather
+ * than swallowed, because an unlocatable weigh-in is unpaid work the collector
+ * needs to know about while they can still re-weigh.
+ */
+async function settleDrafts(position: Fix): Promise<{ located: number; expired: number }> {
+  const result = { located: 0, expired: 0 };
+
+  for (const draft of await queue.awaitingGps()) {
+    const attached = await queue.attachFix(draft.id, position, (payload) =>
+      signWeighIn(payload, identity),
+    );
+    if (attached.outcome === "located") result.located += 1;
+    if (attached.outcome === "expired") result.expired += 1;
+  }
+
+  return result;
+}
+
 async function commit(): Promise<void> {
   const p = provisioning!;
-  const weightInput = document.getElementById("weight") as HTMLInputElement;
-  const weightKg = Number(weightInput.value);
+  const weightInput = document.getElementById("weight") as HTMLInputElement | null;
+  const weightKg = Number(weightInput?.value ?? "");
 
-  // Refuse to sign an incomplete record. A weigh-in missing GPS or a photo will
-  // be quarantined server-side anyway; better the collector learns now, while
-  // the material is still on the scale.
+  // Weight and photo are perishable: the sack gets tipped and the truck leaves,
+  // and neither can be recovered ten minutes later. A position can — the
+  // collector is still standing at the hub. So these two are still refused up
+  // front, while a missing fix downgrades the record to a draft instead of
+  // discarding the capture.
   const problems: string[] = [];
   if (!Number.isFinite(weightKg) || weightKg <= 0) problems.push("a weight");
-  if (!fix) problems.push("a GPS fix");
   if (!photoHash) problems.push("a photo");
 
   if (problems.length > 0) {
@@ -481,26 +963,29 @@ async function commit(): Promise<void> {
     return;
   }
 
-  const payload: WeighInPayload = {
+  const unlocated: queue.UnlocatedPayload = {
     schema: "proofchain.weighin.v1",
     collectorId: p.collectorId,
     hubId: p.hubId,
     deviceId: p.deviceId,
     weightKg: Number(weightKg.toFixed(3)),
     material,
-    lat: fix!.lat,
-    lng: fix!.lng,
     capturedAt: new Date().toISOString(),
     photoHash: photoHash!,
     nonce: randomNonce(),
   };
 
+  // Signed here only if a fix is in hand. A draft is stored unsigned on purpose:
+  // the signature covers the coordinates, so signing now and amending later would
+  // produce a record whose signature does not match what it claims.
+  const payload = fix ? { ...unlocated, lat: fix.lat, lng: fix.lng } : unlocated;
+
   await queue.enqueue({
-    id: crypto.randomUUID(),
+    id: randomId(),
     payload,
-    signature: signWeighIn(payload, identity),
+    signature: fix ? signWeighIn(payload as WeighInPayload, identity) : null,
     photo,
-    status: "queued",
+    status: fix ? "queued" : "awaiting-gps",
     attempts: 0,
     lastError: null,
     createdAt: new Date().toISOString(),
@@ -513,14 +998,24 @@ async function commit(): Promise<void> {
   // the next sack is nearly always the same material at the same spot.
   photo = null;
   photoHash = null;
+  photoSlot = idleSlot();
   releasePhotoPreview();
   // Cleared explicitly: render() deliberately carries the weight field across
   // re-renders, so a committed weigh-in must blank it or the next one inherits it.
-  weightInput.value = "";
-  notice = { tone: "good", text: `Signed and queued ${payload.weightKg.toFixed(3)} kg.` };
+  if (weightInput) weightInput.value = "";
+  notice = fix
+    ? { tone: "good", text: `Signed and queued ${payload.weightKg.toFixed(3)} kg.` }
+    : {
+        tone: "warn",
+        text:
+          `Held ${payload.weightKg.toFixed(3)} kg without a position. ` +
+          `Tap "Get GPS fix" and it will be signed and sent automatically.`,
+      };
 
   await render();
-  void runSync();
+  // A draft has nothing to send, and running a sync pass would only spend a
+  // field connection discovering that.
+  if (fix) void runSync();
 }
 
 /**
@@ -560,8 +1055,67 @@ async function drainQueue(): Promise<void> {
 
 // ---------------------------------------------------------------- lifecycle
 
+/**
+ * Pull the catalogue and re-render only if it actually changed.
+ *
+ * Unconditionally re-rendering here would swap the DOM out from under a collector
+ * every time this runs, and it runs on a timer. `refreshCatalogue` reports whether
+ * anything moved so the common case — nothing changed — costs nothing on screen.
+ */
+async function syncCatalogue(): Promise<void> {
+  const changed = await refreshCatalogue();
+  if (!changed) return;
+
+  reconcileSelection();
+  await render();
+}
+
+/**
+ * Refresh the hub list from the public directory.
+ *
+ * A phone enrolled before a hub existed would otherwise never see it, and
+ * re-pairing in the field means finding someone with an operator login. Silent
+ * on failure: the device already holds a usable list, and a collector mid-shift
+ * has nothing to do about the directory being unreachable.
+ *
+ * Re-renders only when something actually changed, for the same reason
+ * syncCatalogue does — this runs on a timer and would otherwise swap the DOM out
+ * from under whoever is typing.
+ */
+async function syncHubs(): Promise<void> {
+  const p = provisioning;
+  if (!p) return;
+
+  let directory: HubOption[];
+  try {
+    directory = await fetchHubDirectory();
+  } catch {
+    return;
+  }
+
+  const merged = mergeHubSnapshot(directory, p);
+  const listChanged = JSON.stringify(merged.hubs) !== JSON.stringify(hubChoices(p.hubs, p));
+  if (!listChanged && !merged.assignment) return;
+
+  saveProvisioning({ ...p, ...(merged.assignment ?? {}), hubs: merged.hubs });
+
+  // An operator moved the hub this device is standing at, so any fix on screen
+  // was judged against the old fence.
+  if (merged.assignment) {
+    fix = null;
+    notice = {
+      tone: "warn",
+      text: `${merged.assignment.hubName} has moved. Take a new GPS fix.`,
+    };
+  }
+
+  await render();
+}
+
 window.addEventListener("online", () => {
   void runSync();
+  void syncCatalogue();
+  void syncHubs();
 });
 window.addEventListener("offline", () => {
   void render();
@@ -573,8 +1127,17 @@ setInterval(() => {
   void runSync();
 }, 60_000);
 
+// Far less often than the queue drain: a catalogue changes when an operator
+// decides it does, which is a matter of weeks, not minutes.
+setInterval(() => {
+  void syncCatalogue();
+  void syncHubs();
+}, 15 * 60_000);
+
 void queue.pruneSynced();
 void render();
+void syncCatalogue();
+void syncHubs();
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
   window.addEventListener("load", () => {

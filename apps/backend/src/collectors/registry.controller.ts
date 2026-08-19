@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query } from "@nestjs/common";
-import { ApiTags } from "@nestjs/swagger";
+import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import { RegistryService } from "./registry.service";
-import { Roles } from "../auth/auth.module";
+import { Public, Roles } from "../auth/auth.module";
 import { CreateCollectorDto, CreateHubDto, EnrolDeviceDto } from "../common/dto";
 
 @ApiTags("registry")
@@ -40,6 +40,19 @@ export class RegistryController {
   @Get("hubs")
   listHubs() {
     return this.registry.listHubs();
+  }
+
+  /**
+   * Public for the same reason the material catalogue is: a capture device holds
+   * no credentials, and it cannot warn a collector that a fix falls outside a
+   * geofence without knowing where the hubs are. Declared before nothing else
+   * matches "hubs/..." so ordering is not a concern here.
+   */
+  @Public()
+  @Get("hubs/directory")
+  @ApiOperation({ summary: "Hub coordinates and geofences, for capture devices" })
+  hubDirectory() {
+    return this.registry.hubDirectory();
   }
 
   @Roles("admin")

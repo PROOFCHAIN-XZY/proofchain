@@ -1,0 +1,131 @@
+# ProofChain TLS termination and origin unification.
+#
+# This file exists to solve one problem: geolocation, the camera and service
+# workers are all gated behind a *secure context*. A collector's phone opening
+# the capture app over plain HTTP gets PERMISSION_DENIED from the GPS no matter
+# what the phone's settings say, and no amount of application code can lift that
+# — it is a browser rule, not a bug.
+#
+# The second problem is created by fixing the first. A secure page may not
+# `fetch()` a plain-HTTP endpoint, so serving capture over HTTPS while the API
+# stays on `http://host:3000` trades a broken GPS for broken sync: mixed content,
+# blocked before it leaves the phone. The fix is that each app and its API share
+# one origin, and TLS is terminated here, once, in front of everything.
+#
+# `apps/capture/vite.config.ts` does exactly this for development via a Vite
+# proxy. That proxy is dev-only — `vite build` emits static files and serves
+# nothing — so this is its production counterpart. Keep the two in step: both
+# expose the API under `/api` and strip that prefix before forwarding.
+
+{
+	# Fail loudly at startup rather than silently serving plaintext.
+	email {$ACME_EMAIL}
+
+	# Caddy obtains and renews certificates itself. Nothing below needs a cert
+	# path, and nothing needs a cron job.
+}
+
+# ---------------------------------------------------------------------------
+# Shared snippets
+# ---------------------------------------------------------------------------
+
+(security_headers) {
+	header {
+		# The whole point of this file: tell browsers never to try plaintext
+		# again. Without HSTS a collector who types the bare hostname gets one
+		# unencrypted round trip, and a captive-portal wifi can hijack it.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Capture needs the camera and GPS; nothing here needs a microphone.
+		Permissions-Policy "camera=(self), geolocation=(self), microphone=()"
+		# Caddy advertises itself by default; a version number helps nobody but
+		# someone matching a CVE against it.
+		-Server
+	}
+}
+
+(api_proxy) {
+	# `handle_path` strips the matched prefix before forwarding, so the backend
+	# keeps owning its routes at the root (`/events`, `/auth/login`) and `/api`
+	# stays a marker that belongs to the edge alone. This mirrors the `rewrite`
+	# in the Vite dev proxy — if you change one, change both.
+	handle_path /api/* {
+		reverse_proxy backend:3000 {
+			# The backend rate-limits per client IP and reads it from
+			# X-Forwarded-For. It only trusts that header when TRUST_PROXY is
+			# set — run it with TRUST_PROXY=1, or every request in the world
+			# shares one rate-limit bucket. See config/trust-proxy.ts.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+
+			# A weigh-in photo is several megabytes over a field link. The
+			# default 30s read timeout aborts those mid-transfer, and the phone
+			# then retries the whole upload from zero.
+			transport http {
+				read_timeout 180s
+				write_timeout 180s
+			}
+		}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Capture PWA — the collector's phone
+# ---------------------------------------------------------------------------
+#
+# Its own hostname rather than a path on a shared one. The service worker's
+# scope is its serving directory, so mounting this under `/capture` would give
+# it a scope it cannot escape and break offline caching in ways that only show
+# up in the field.
+
+{$CAPTURE_HOST} {
+	import security_headers
+	import api_proxy
+
+	encode zstd gzip
+
+	# The build emits content-hashed asset filenames, so they are immutable and
+	# can be cached hard. index.html and the service worker must not be: a phone
+	# holding a stale service worker keeps serving a stale app for days.
+	@immutable path /assets/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	@no_cache path /index.html /sw.js /manifest.webmanifest
+	header @no_cache Cache-Control "no-cache, must-revalidate"
+
+	# Wrapped in `handle` so it is mutually exclusive with the `handle_path
+	# /api/*` imported above, and NOT left bare in the site block.
+	#
+	# Bare, this is a live bug rather than a style question. Caddy evaluates
+	# directives in its own fixed order, not the order written, and `rewrite`
+	# (which is what `try_files` compiles to) runs *before* `handle`. So a
+	# request for /api/events would be rewritten to /index.html first, find no
+	# matching file, and be served the app shell — the API proxy below would
+	# never see it, and every sync would silently receive HTML with a 200.
+	# `handle` blocks are evaluated as an exclusive group in written order, which
+	# puts /api/* on the proxy and everything else on the file server.
+	handle {
+		root * /srv/capture
+		# Single-page app: unknown paths are routes, not missing files.
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Operator dashboard
+# ---------------------------------------------------------------------------
+
+{$DASHBOARD_HOST} {
+	import security_headers
+	import api_proxy
+
+	# Next.js in server mode, not a static export — it owns its own routing,
+	# streaming and asset paths, so it is proxied whole rather than served
+	# from disk.
+	reverse_proxy dashboard:3001 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

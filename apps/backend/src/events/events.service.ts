@@ -14,6 +14,7 @@ import {
 } from "../database/entities";
 import { evaluateIntegrity } from "./integrity";
 import { loadConfig } from "../config/configuration";
+import { MaterialsService } from "../materials/materials.service";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -40,6 +41,7 @@ export class EventsService {
     private readonly collectors: Repository<CollectorEntity>,
     @InjectRepository(HubEntity)
     private readonly hubs: Repository<HubEntity>,
+    private readonly materials: MaterialsService,
   ) {}
 
   /**
@@ -54,6 +56,13 @@ export class EventsService {
     if (payload.schema !== "proofchain.weighin.v1") {
       throw new BadRequestException(`unsupported payload schema: ${payload.schema}`);
     }
+
+    // Existence only, not activity: a retired code still ingests. A phone can
+    // hold a queue signed hours ago against a catalogue that has since changed,
+    // and rejecting those records would destroy already-signed field work that
+    // the collector cannot redo — the sacks have been tipped. Retiring a material
+    // stops new *selection*; it is not a repudiation of work in flight.
+    await this.materials.assertKnown(payload.material);
 
     const payloadHash = eventPayloadHash(payload);
     const now = new Date();

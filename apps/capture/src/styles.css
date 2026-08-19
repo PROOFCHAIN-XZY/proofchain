@@ -192,21 +192,45 @@ main {
 
 .chip {
   min-height: var(--touch);
-  padding: 0 1rem;
+  /* Vertical padding rather than a fixed line: a chip now stacks a material name
+     over its code, and the name wraps on a narrow phone. */
+  padding: 0.4rem 1rem;
   border: 2px solid var(--rule);
   background: var(--surface);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
   border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.05rem;
+  text-align: left;
   transition:
     transform 120ms cubic-bezier(0.16, 1, 0.3, 1),
     background-color 120ms ease;
 }
 
+/* The signed code, under the human name. Monospace because it is an identifier
+   an auditor will match against a report, not prose. */
+.chip small {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
 .chip[aria-pressed="true"] {
   background: var(--ink);
   color: var(--bone);
+}
+
+/* --ink-soft is tuned for the light surface and goes muddy on the inked chip. */
+.chip[aria-pressed="true"] small {
+  color: var(--bone);
+  opacity: 0.7;
 }
 
 .chip:active {
@@ -216,6 +240,40 @@ main {
 .chip:focus-visible {
   outline: 3px solid var(--signal);
   outline-offset: 2px;
+}
+
+/* Field guidance under a control — what actually counts as the selected
+   material. Sized to be readable at arm's length in daylight without competing
+   with the label above it. */
+.hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  max-width: 46ch;
+}
+
+/* The products a material covers, under the guidance line. Tags rather than a
+   sentence: a collector matches the object in their hand against this list at a
+   glance, and wrapping prose makes them read instead. */
+.products {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.products li {
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  white-space: nowrap;
 }
 
 button.action {
@@ -332,6 +390,32 @@ select {
   font-weight: 700;
 }
 
+/*
+ * Per-sensor status, sitting directly under the readout it belongs to. A GPS
+ * failure and a photo failure are separate conditions with separate remedies, so
+ * they get separate lines rather than taking turns in the single notice slot at
+ * the top of the screen.
+ */
+.slot-note {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  padding: 0.25rem 0.4rem;
+  border-left: 3px solid currentColor;
+}
+
+.slot-note[data-tone="bad"] {
+  color: var(--bad);
+}
+
+.slot-note[data-tone="warn"] {
+  color: var(--warn);
+}
+
+.slot-note[hidden] {
+  display: none;
+}
+
 /* ---------- queue ---------- */
 
 .queue {
@@ -366,6 +450,15 @@ select {
   color: var(--bad);
 }
 
+/*
+ * A held weigh-in is captured and safe but not yet sendable. It reads as its own
+ * state rather than as an error: nothing has gone wrong, and the collector's next
+ * action ("take a fix") is different from the one a rejection calls for.
+ */
+.tally[data-kind="awaiting-gps"] b {
+  color: var(--warn);
+}
+
 ul.records {
   list-style: none;
   margin: 0;
@@ -392,6 +485,11 @@ ul.records li::before {
   background: var(--ink-soft);
 }
 
+ul.records li[data-status="awaiting-gps"]::before {
+  background: var(--warn);
+  /* Hollow, not filled: captured but not yet committed to the wire. */
+  box-shadow: inset 0 0 0 2px var(--bone);
+}
 ul.records li[data-status="queued"]::before {
   background: var(--warn);
 }

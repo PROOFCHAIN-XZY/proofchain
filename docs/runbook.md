@@ -385,6 +385,35 @@ systemctl --user start docker-desktop
 
 Then retry your docker command.
 
+### "fetch failed" to Nominatim, Horizon or Friendbot — but curl works
+
+**Symptom:** `hub:locality`, `hub:relocate "Town, Country"`, `stellar:account` or
+the ledger read-back fail with `fetch failed` / `ETIMEDOUT`, while `curl` to the
+same URL from the same machine returns 200. The give-away is the timing: Node
+fails in **well under a second**, which is a connect failure, not a timeout.
+
+**Cause:** the hosts are dual-stack, the network's IPv6 path is black-holed, and
+Node prefers the AAAA record. `curl` picks IPv4. Common on phone tethering and
+some mobile ISPs. Confirm with:
+
+```bash
+getent ahosts nominatim.openstreetmap.org        # shows both A and AAAA
+node -e 'fetch("https://nominatim.openstreetmap.org/status.php").then(r=>console.log(r.status)).catch(e=>console.log("fail",e.cause?.code))'
+node --dns-result-order=ipv4first -e 'fetch("https://nominatim.openstreetmap.org/status.php").then(r=>console.log(r.status))'
+```
+
+**Solution:** prefer IPv4 for outbound calls:
+
+```bash
+export NODE_OPTIONS=--dns-result-order=ipv4first
+```
+
+Related: on a slow uplink the default timeouts are too tight. Horizon has been
+measured at 11.6 s on a tethered link, where the 8 s `HORIZON_TIMEOUT_MS` default
+silently degrades every audit report's ledger confirmation to "unchecked —
+Horizon unreachable". Raise `HORIZON_TIMEOUT_MS` and `NOMINATIM_TIMEOUT_MS` to
+20000 and 15000 respectively on such a connection.
+
 ### "Database migrations failed"
 
 **Symptom:** `TypeORM migration error` or `table already exists`
@@ -688,27 +717,186 @@ An alternative for a USB-connected Android device is `adb reverse tcp:3002
 tcp:3002` (and `tcp:3000` for the API), which lets the phone reach the app at
 `http://localhost:3002` — already a secure context, no certificate needed.
 
+## Managing the material catalogue
+
+The materials collectors can choose from live in the database, not in the apps.
+An administrator maintains them at **Dashboard → Materials**, or over the API.
+
+### The one rule
+
+A material **code** is part of the signed weigh-in payload, so it is hashed into
+the Merkle root and anchored on the ledger. It cannot be renamed or deleted once a
+collector has signed it — that would invalidate the audit report of every batch
+containing it, and no migration can undo a root that is already on a public
+ledger.
+
+So the catalogue separates three things:
+
+| Field | Changeable? | Notes |
+|---|---|---|
+| `code` | **Never** | `PET`. Signed, hashed, anchored. Append-only. |
+| `name` | Freely | `Clear drink bottles`. Presentation only, never signed. |
+| `active` | Freely | `false` retires it: hidden from capture, history untouched. |
+
+### Add a material
+
+```bash
+curl -X POST https://<api>/materials -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"code":"PVC","name":"Pipe and profile",
+       "description":"Rigid pipe, window profile. Resin code 3.","sortOrder":70}'
+```
+
+Codes are uppercased, 2–16 characters, letters digits `_` or `-`. Choose carefully:
+this string is permanent from the first weigh-in that carries it.
+
+### Retire one ("remove")
+
+```bash
+curl -X PATCH https://<api>/materials/PS -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"active": false}'
+```
+
+This is what "removing" a material means here, and it is almost always what you
+want. The code disappears from the capture pickers within 15 minutes (sooner if a
+phone reconnects), and every stored weigh-in and sealed batch carrying it keeps
+verifying exactly as before. Reverse it with `{"active": true}`.
+
+### Delete one outright
+
+Only possible for a code nothing has ever used — a typo, in practice:
+
+```bash
+curl -X DELETE https://<api>/materials/PTE -H "authorization: Bearer $TOKEN"
+```
+
+If any event or batch carries the code, this returns **409** naming the counts and
+telling you to retire it instead. That refusal is the intended behaviour, not an
+obstacle to work around.
+
+### What the devices do
+
+The capture PWA and the Expo app fetch `GET /materials` and cache it, so:
+
+- The picker renders instantly from cache, offline, with no spinner.
+- A phone that has never reached the backend falls back to the six codes compiled
+  into `@proofchain/shared`, and labels the list "default list — not yet synced".
+- The cache is keyed by backend origin, so pointing a device at a different
+  instance discards it rather than offering codes that instance may not have.
+- Retiring the material a collector currently has selected moves their selection
+  to the first available one on the next refresh.
+
+A weigh-in signed against a since-retired code **still syncs**. That is
+deliberate: a phone can hold a queue signed hours ago, and rejecting it would
+destroy field work nobody can redo. Opening a *batch* with a retired code is
+refused, because that is a live decision rather than history.
+
+If you retire everything, the apps fall back to their built-in list rather than
+show an empty picker — check **Dashboard → Materials** if collectors report codes
+you thought you had removed.
+
 ## Setting the hub location
 
 Weigh-ins are geofenced against a hub, so a hub on the wrong continent
-quarantines everything a developer captures. The seed defaults to Nairobi
-(the pilot site); there are two ways to point it somewhere else.
+quarantines everything a developer captures. The pilot spans **Kenya and
+Nigeria** and trials several sites in each, so moving a hub is routine.
 
-**Before seeding** — environment variables:
-
-```bash
-HUB_LAT=9.06035 HUB_LNG=7.46783 HUB_GEOFENCE_M=500 npm run seed
-```
-
-**After seeding** — relocate the existing hub:
+The seed defaults to Nairobi. List the known sites in both countries:
 
 ```bash
-npm run hub:relocate -- <lat> <lng> [radiusM] [hubCode]
+npm run hub:relocate -- --list
 ```
+
+```
+Kenya:   nairobi  mombasa  kisumu  nakuru  eldoret  thika  machakos  malindi
+Nigeria: lagos    abuja    kano    ibadan  port-harcourt  kaduna  benin-city  onitsha
+```
+
+**After seeding** — relocate the existing hub, four equivalent ways:
+
+```bash
+npm run hub:relocate -- lagos                  # a known site
+npm run hub:relocate -- kisumu 500 NBO-01      # site, fence radius, which hub
+npm run hub:relocate -- "Kisii, Kenya"         # anywhere in KE/NG, looked up via OSM
+npm run hub:relocate -- 9.0567 7.4969 300      # an exact coordinate
+```
+
+Free-text lookup needs `NOMINATIM_USER_AGENT` set and is **confined to Kenya and
+Nigeria** — deliberately, because "Lagos" matches Portugal as readily as Nigeria
+and an unbounded search would let a typo move a hub to another continent, where
+every weigh-in fails `geofence_ok` for a reason invisible from the capture app.
+A site name resolves offline from the catalogue and needs no geocoder.
+
+**Before seeding** — the same vocabulary, as environment variables:
+
+```bash
+HUB_SITE=lagos npm run seed                                   # a known site
+HUB_LAT=9.06035 HUB_LNG=7.46783 HUB_GEOFENCE_M=500 npm run seed  # exact coordinate
+```
+
+`HUB_LAT`/`HUB_LNG` win over `HUB_SITE`, so an exact coordinate is never
+second-guessed by a city centre. With `HUB_SITE` the hub's code and name are
+derived from the site (`LAG-01 — Lagos Pilot Hub`) rather than left as Nairobi's;
+override with `HUB_CODE` and `HUB_NAME`.
+
+Catalogue coordinates are **city-centre approximations**, correct for seeding a
+geofence measured in hundreds of metres and not survey data. A real hub's
+coordinate should be taken on site, from a device, and passed explicitly.
 
 Re-enrol the capture device afterwards: it stores the hub's coordinates and
 fence at enrolment so it can refuse an unusable fix before signing, and a stale
 copy would judge against the old location.
+
+### Many hubs, and switching between them on the phone
+
+The capture app shows a **Hub** dropdown on the capture screen, so a collector who
+delivers to a different site can switch without an operator login or any signal.
+
+Create a hub for each catalogue site first — otherwise the dropdown has one entry:
+
+```bash
+npm run hubs:sites                  # a hub per known site, 500 m fence
+npm run hubs:sites -- lagos kano    # only these
+npm run hubs:sites -- --fence 300   # tighter fence
+```
+
+Idempotent by hub code: re-running adds what is missing and never moves an
+existing hub. Development only — a production hub is a real place with a real
+operator, created through `POST /hubs` by someone who has been there.
+
+**How the phone gets the list.** A field device holds no operator token and
+`/hubs` requires one, so the list is snapshotted into the device's provisioning
+at enrolment. Adding hubs later means re-enrolling the phone to pick them up.
+
+**Why this is safe.** The hub id travels inside the signed payload, so a switch is
+recorded rather than implicit, and the server geofences every event against the
+hub it names. Claiming a hub you are not standing at quarantines the weigh-in —
+the dropdown lets a collector say where they are, not where they were. Switching
+also clears any fix already on screen, because that reading was judged against the
+previous hub's fence; the app asks for a new one.
+
+### Putting a place name on the hub
+
+Audit reports can show a human location ("Kaduna, Nigeria") next to the hub
+coordinate. It is resolved from OpenStreetMap's Nominatim once per hub — every
+weigh-in sits inside the hub's fence, so they all share one label — and it is
+free and keyless.
+
+```bash
+NOMINATIM_USER_AGENT="proofchain/0.1 (ops@example.org)"   # required, see below
+npm run hub:locality              # label hubs that have none
+npm run hub:locality -- --force   # re-resolve every hub
+```
+
+`NOMINATIM_USER_AGENT` has no default on purpose. OSM's public instance requires
+an identifying agent with contact details and blocks generic ones, so leaving it
+empty disables the feature rather than risking a ban on an anonymous request. New
+hubs are labelled at creation; a failure there is logged and leaves the label
+null, which the report renders as coordinates alone.
+
+The label is decoration and never evidence: it is not in the signed payload, not
+in the Merkle leaf, and no integrity check reads it. `hub:relocate` clears it,
+since a label resolved for the old coordinate would be actively wrong.
 
 Nothing else hardcodes a coordinate. The demo script and the browser suites read
 the hub from `GET /hubs` at startup, so they follow wherever it is. The fixed

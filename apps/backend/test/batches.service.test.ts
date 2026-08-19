@@ -8,7 +8,11 @@ import {
 } from "../src/database/entities";
 import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
-import { buildAnchorAttemptsService, stubLedgerVerification } from "./support/services";
+import {
+  buildAnchorAttemptsService,
+  buildMaterialsService,
+  stubLedgerVerification,
+} from "./support/services";
 import { STUCK_AFTER_FAILURES } from "../src/batches/anchor-backoff";
 
 /**
@@ -31,6 +35,7 @@ function buildService(database: TestDatabase): BatchesService {
     dataSource,
     stubLedgerVerification(),
     buildAnchorAttemptsService(dataSource),
+    buildMaterialsService(dataSource),
   );
 }
 
@@ -707,6 +712,7 @@ describe("BatchesService.verifyEvent — ledger read-back", () => {
       db.dataSource,
       stubLedgerVerification(confirmation),
       buildAnchorAttemptsService(db.dataSource),
+      buildMaterialsService(db.dataSource),
     );
   }
 
@@ -779,6 +785,7 @@ describe("BatchesService.ledgerStatus", () => {
       db.dataSource,
       stubLedgerVerification(confirmation),
       buildAnchorAttemptsService(db.dataSource),
+      buildMaterialsService(db.dataSource),
     );
   }
 

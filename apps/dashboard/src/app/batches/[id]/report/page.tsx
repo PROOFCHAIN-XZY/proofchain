@@ -197,6 +197,23 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
                 {report.hub.name} ({report.hub.code})
               </td>
             </tr>
+            {report.hub.locality ? (
+              <tr>
+                <th>Location</th>
+                {/*
+                  Labelled as a lookup, not as a verified fact — the coordinate
+                  below is what the geofence and the proof actually rest on, and
+                  a reader should not mistake a place name for evidence.
+                */}
+                <td>
+                  {report.hub.locality}{" "}
+                  <span className="note">
+                    (reverse-geocoded from the coordinate
+                    {report.hub.localityAttribution ? " · OpenStreetMap, ODbL" : ""})
+                  </span>
+                </td>
+              </tr>
+            ) : null}
             <tr>
               <th>Coordinates</th>
               <td className="hash">

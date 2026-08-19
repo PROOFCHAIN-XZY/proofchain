@@ -27,6 +27,9 @@
       ],
       "@shared/geo": [
         "../../packages/shared/src/geo.ts"
+      ],
+      "@shared/materials": [
+        "../../packages/shared/src/materials.ts"
       ]
     }
   },

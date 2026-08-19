@@ -87,6 +87,12 @@ export async function syncPending(): Promise<SyncOutcome> {
   const records = await queue.pending();
 
   for (const record of records) {
+    // Belt and braces. `pending()` already excludes drafts, but posting an
+    // unsigned or unlocated payload would be rejected by the server as a
+    // malformed request and burn the record's retry budget for a reason the
+    // collector could never act on. Prove it here instead of trusting a status.
+    if (!queue.isLocated(record)) continue;
+
     outcome.attempted += 1;
     await queue.update(record.id, { status: "syncing" });
 
@@ -164,7 +170,7 @@ function failureSummary(response: IngestResponse): string {
     .join("; ");
 }
 
-async function postWeighIn(record: QueuedWeighIn): Promise<IngestResponse> {
+async function postWeighIn(record: queue.LocatedWeighIn): Promise<IngestResponse> {
   const controller = new AbortController();
   // A field link can hang open indefinitely; fail fast and retry later instead.
   const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -231,6 +237,24 @@ export function fetchHubs(
   { id: string; code: string; name: string; lat: number; lng: number; geofenceRadiusM: number }[]
 > {
   return authedGet("/hubs", token);
+}
+
+/**
+ * The hub list, without any credential.
+ *
+ * An enrolled phone holds no operator token, so this is the only way it can
+ * learn about hubs added since it was paired — and re-pairing in the field means
+ * finding someone with an operator login. Public on the backend for the same
+ * reason the material catalogue is.
+ */
+export async function fetchHubDirectory(): Promise<
+  { id: string; code: string; name: string; lat: number; lng: number; geofenceRadiusM: number }[]
+> {
+  const res = await fetch(`${backendUrl()}/hubs/directory`, {
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`hub directory failed: ${res.status}`);
+  return (await res.json()) as Awaited<ReturnType<typeof fetchHubDirectory>>;
 }
 
 export async function enrolDevice(

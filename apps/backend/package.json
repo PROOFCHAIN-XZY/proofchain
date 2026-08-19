@@ -18,7 +18,9 @@
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/database/data-source.ts",
     "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
-    "hub:relocate": "ts-node -r tsconfig-paths/register src/database/relocate-hub.ts"
+    "hub:relocate": "ts-node -r tsconfig-paths/register src/database/relocate-hub.ts",
+    "hub:locality": "ts-node -r tsconfig-paths/register src/database/backfill-hub-locality.ts",
+    "hubs:sites": "ts-node -r tsconfig-paths/register src/database/seed-hub-sites.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

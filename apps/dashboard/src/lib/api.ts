@@ -16,8 +16,29 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The backend's own explanation, when it sent one worth showing a person. */
+    readonly detail?: string,
   ) {
     super(message);
+  }
+}
+
+/**
+ * Nest's exception filter sends `{ message }`, sometimes as an array of
+ * validation failures. Anything unreadable yields undefined rather than dumping
+ * a stringified body onto the page.
+ */
+async function detailOf(res: Response): Promise<string | undefined> {
+  try {
+    const body: unknown = await res.json();
+    if (typeof body !== "object" || body === null) return undefined;
+
+    const message = (body as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+    if (Array.isArray(message)) return message.filter((m) => typeof m === "string").join("; ");
+    return undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -37,7 +58,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
 
   if (!res.ok) {
-    throw new ApiError(`${init.method ?? "GET"} ${path} failed`, res.status);
+    // Carry the backend's own message through. Several of these are the only
+    // useful thing on screen — "material PS is used by 240 event(s) … retire it
+    // instead" tells an operator what to do, whereas "DELETE /materials/PS
+    // failed" tells them to guess.
+    throw new ApiError(`${init.method ?? "GET"} ${path} failed`, res.status, await detailOf(res));
   }
   return (await res.json()) as T;
 }
@@ -93,7 +118,17 @@ export interface AuditReport {
     sealedAt: string | null;
     createdAt: string;
   };
-  hub: { id: string; code: string; name: string; lat: number; lng: number };
+  hub: {
+    id: string;
+    code: string;
+    name: string;
+    lat: number;
+    lng: number;
+    /** OSM-derived place name; descriptive only, never part of the proof. */
+    locality: string | null;
+    localityAttribution: string | null;
+    localityResolvedAt: string | null;
+  };
   collectors: {
     id: string;
     name: string;
@@ -193,8 +228,45 @@ export interface AnchorAttempt {
   occurredAt: string;
 }
 
+export interface Material {
+  code: string;
+  name: string;
+  description: string | null;
+  /** Products a collector would recognise this material as. Never null. */
+  examples: string[];
+  active: boolean;
+  sortOrder: number;
+}
+
+export interface CurrentUser {
+  id: string;
+  email: string;
+  role: "admin" | "operator" | "auditor";
+}
+
 export const api = {
   anchorHealth: () => request<AnchorHealth>("/batches/anchor-health"),
+  me: () => request<CurrentUser>("/auth/me"),
+  materials: () => request<Material[]>("/materials"),
+  createMaterial: (body: {
+    code: string;
+    name: string;
+    description?: string;
+    examples?: string[];
+    sortOrder?: number;
+  }) => request<Material>("/materials", { method: "POST", body: JSON.stringify(body) }),
+  updateMaterial: (
+    code: string,
+    body: {
+      name?: string;
+      description?: string;
+      examples?: string[];
+      active?: boolean;
+      sortOrder?: number;
+    },
+  ) => request<Material>(`/materials/${code}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteMaterial: (code: string) =>
+    request<{ code: string; deleted: true }>(`/materials/${code}`, { method: "DELETE" }),
   anchorAttempts: (id: string) => request<AnchorAttempt[]>(`/batches/${id}/anchor-attempts`),
   listBatches: (status?: string) =>
     request<Batch[]>(`/batches${status ? `?status=${status}` : ""}`),

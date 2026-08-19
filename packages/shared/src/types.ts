@@ -6,8 +6,22 @@
  * demands. Build backwards from the audit artifact.
  */
 
-export const MATERIAL_TYPES = ["PET", "HDPE", "LDPE", "PP", "PS", "MIXED"] as const;
-export type MaterialType = (typeof MATERIAL_TYPES)[number];
+/**
+ * A material code, as signed into the payload.
+ *
+ * This was a closed union of six literals until the catalogue moved into the
+ * database. It cannot stay one: an operator can now add a code at runtime, and a
+ * union compiled last week has no way to name it. Validation therefore moved
+ * from the type system to two runtime layers — `MATERIAL_CODE_PATTERN` for
+ * shape, and a catalogue lookup for existence — which is where it has to live
+ * once the set is data rather than code.
+ *
+ * The wire format did not change. A code was serialised as a JSON string before
+ * and is serialised as a JSON string now, so every root anchored under the old
+ * union still recomputes identically. See `./materials.js` for why codes are
+ * append-only.
+ */
+export type MaterialType = string;
 
 export const BATCH_STATUSES = ["open", "sealed", "processed", "sold"] as const;
 export type BatchStatus = (typeof BATCH_STATUSES)[number];

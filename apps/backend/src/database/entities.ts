@@ -7,6 +7,7 @@ import {
   ManyToOne,
   OneToMany,
   OneToOne,
+  PrimaryColumn,
   PrimaryGeneratedColumn,
   Unique,
   UpdateDateColumn,
@@ -56,6 +57,33 @@ export class HubEntity {
 
   @Column("int", { default: 250 })
   geofenceRadiusM: number;
+
+  /**
+   * Human place name for this coordinate, e.g. "Kaduna, Nigeria".
+   *
+   * Descriptive only — it exists so an audit report reads as somewhere real
+   * rather than as a pair of decimals. Nothing derives from it: the geofence
+   * uses lat/lng, and the signed payload and Merkle leaf never see it, so a
+   * wrong or missing label cannot affect whether a weigh-in is accepted or a
+   * batch verifies. Nullable because the geocoder is allowed to be down, and
+   * because hubs enrolled before this column existed have no label.
+   */
+  @Column({ type: "varchar", length: 200, nullable: true })
+  locality: string | null;
+
+  /**
+   * When the label was resolved, and the source's attribution.
+   *
+   * Kept because the label is a third-party claim about the world at a point in
+   * time, and a report that shows it should be able to say where it came from —
+   * ODbL requires the credit, and a reader deserves to know the name is OSM's
+   * as of a date, not our own assertion.
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  localityResolvedAt: Date | null;
+
+  @Column({ type: "varchar", length: 300, nullable: true })
+  localityAttribution: string | null;
 
   @Column("numeric", { precision: 10, scale: 3, default: 0.1, transformer: numericTransformer })
   minWeightKg: number;
@@ -430,6 +458,62 @@ export class UserEntity {
   createdAt: Date;
 }
 
+/**
+ * The material catalogue an operator maintains at runtime.
+ *
+ * `code` is the primary key rather than a surrogate uuid, and that is deliberate:
+ * the code is what devices sign and what every event and batch row already
+ * stores, so a uuid would add a join without adding a fact. It also makes the
+ * append-only rule structural — you cannot rename a primary key by accident.
+ *
+ * There is no foreign key from `collection_events.material` or
+ * `batches.material` to this table. Adding one would be wrong: a retired or
+ * deleted catalogue row must never be able to orphan or cascade into an anchored
+ * event, whose material is a signed historical fact rather than a reference to
+ * current configuration. Existence is checked at ingest instead, where it can be
+ * reported to the collector as a 400 rather than as a constraint violation.
+ */
+@Entity("materials")
+export class MaterialEntity {
+  /** Uppercase, `PET`-shaped, immutable once signed. Never rename in place. */
+  @PrimaryColumn({ type: "varchar", length: 16 })
+  code: string;
+
+  /** Presentation only — never signed, never hashed, safe to edit at will. */
+  @Column({ type: "varchar", length: 120 })
+  name: string;
+
+  /** Field guidance: what actually counts as this material. */
+  @Column({ type: "varchar", length: 300, nullable: true })
+  description: string | null;
+
+  /**
+   * The products a collector would recognise this material as — "milk jugs",
+   * "bottle caps".
+   *
+   * A real array rather than a delimited string, because these are separate
+   * values that a picker renders one per chip, and packing them into one column
+   * would put the parser in every reader instead of in the driver. Not null:
+   * "no examples" is the empty array, so nothing downstream has to distinguish
+   * absent from empty.
+   */
+  @Column({ type: "text", array: true, default: () => "'{}'" })
+  examples: string[];
+
+  /** False = retired: hidden from new capture, still valid in every stored event. */
+  @Column({ default: true })
+  active: boolean;
+
+  @Column({ type: "int", default: 100 })
+  sortOrder: number;
+
+  @CreateDateColumn({ type: "timestamptz" })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: "timestamptz" })
+  updatedAt: Date;
+}
+
 export const ALL_ENTITIES = [
   HubEntity,
   CollectorEntity,
@@ -440,4 +524,5 @@ export const ALL_ENTITIES = [
   AnchorRecordEntity,
   AnchorAttemptEntity,
   UserEntity,
+  MaterialEntity,
 ];

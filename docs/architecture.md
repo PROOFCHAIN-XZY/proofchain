@@ -3,7 +3,7 @@
 **Technical design and data model for ProofChain.**
 
 This document describes:
-1. The database schema (8 tables)
+1. The database schema (9 tables)
 2. The integrity v1 checks and threat model
 3. Why classic Stellar and not Soroban
 4. Known limitations and future work
@@ -12,7 +12,7 @@ This document describes:
 
 The schema is designed backwards from the audit artifact. Every table exists because an auditor, a PRO, or a credit buyer will eventually ask about it.
 
-### The 8 Tables
+### The 9 Tables
 
 #### 1. Hubs (collection_points)
 
@@ -91,7 +91,7 @@ CREATE TABLE collection_events (
   deviceId uuid REFERENCES devices,
   batchId uuid REFERENCES batches NULL,  -- Set when added to a batch; frozen when batch seals
   weightKg numeric(10,3),
-  material varchar,              -- PET | HDPE | LDPE | PP | PS | MIXED
+  material varchar,              -- a code from the materials catalogue (table 9)
   lat double precision,
   lng double precision,
   capturedAt timestamptz,        -- Device clock
@@ -124,7 +124,7 @@ Groups of events aggregated for processing. Lifecycle:
 CREATE TABLE batches (
   id uuid PRIMARY KEY,
   hubId uuid REFERENCES hubs,
-  material varchar,              -- All events in a batch must match
+  material varchar,              -- a catalogue code; all events in a batch must match
   status varchar DEFAULT 'open', -- open | sealed | processed | sold
   totalWeightKg numeric(12,3) DEFAULT 0,
   eventCount int DEFAULT 0,
@@ -196,6 +196,64 @@ CREATE TABLE users (
 ```
 
 **Why it matters:** Operators manage batches (seal, custody). Auditors have read-only access. Admins enroll new devices.
+
+#### 9. Materials (material_catalogue)
+
+The material types a collector may choose from, maintained by an administrator at
+runtime rather than compiled into the apps.
+
+```sql
+CREATE TABLE materials (
+  code varchar(16) PRIMARY KEY,  -- "PET" — signed into payloads, permanent
+  name varchar(120),             -- "Mixed plastic" — presentation only
+  description varchar(300),      -- field guidance, nullable
+  examples text[] DEFAULT '{}',  -- products a collector recognises: {"Milk jugs"}
+  active boolean DEFAULT true,   -- false = retired, hidden from new capture
+  "sortOrder" int DEFAULT 100,
+  createdAt timestamptz,
+  updatedAt timestamptz,
+  CONSTRAINT "CHK_materials_code_shape"
+    CHECK (code ~ '^[A-Z0-9][A-Z0-9_-]{1,15}$')
+);
+```
+
+**Why it matters, and why it is shaped like this:** `material` is a field in the
+signed weigh-in payload, so a code is hashed into the Merkle leaf and anchored on
+the ledger. Three consequences follow, and every design decision here is one of
+them:
+
+1. **Codes are append-only.** There is no rename endpoint. Renaming a code that
+   has been anchored would invalidate the audit report of every batch containing
+   it, and no migration can fix that — the root is on a public ledger. The code is
+   the primary key partly to make this structural.
+2. **Retiring is not deleting.** `active: false` removes a material from the
+   capture pickers and touches no stored event. Outright deletion is allowed only
+   for a code no event and no batch has ever used; anything else returns 409 with
+   the reference counts and a pointer to retirement.
+3. **No foreign key from `collection_events.material` or `batches.material`.**
+   This is deliberate. A signed material code is a historical fact, not a
+   reference to current configuration, and a FK would let a catalogue edit
+   cascade into — or be blocked by — anchored evidence. Existence is checked at
+   ingest instead, where it can be reported as a 400.
+
+The two gates differ on purpose:
+
+| Path | Gate | Why |
+|---|---|---|
+| `POST /events` (ingest) | code must **exist** | Capture is offline-first. A phone can hold a queue signed hours ago against a catalogue that has since changed; rejecting those records would destroy already-signed field work nobody can redo. |
+| `POST /batches` (open) | code must exist **and be active** | An operator is making a forward-looking choice with the live catalogue in front of them, so a retired code is a mistake to block. |
+
+`examples` is the products a collector would name — "milk jugs", "bottle caps" —
+and the capture apps show them as tags under the picker. It is presentation, like
+`name` and `description`: never signed, never hashed, and safe for an operator to
+correct when the local waste stream does not look like the one the seed data was
+written for. Always an array, never null, so a picker has one empty state rather
+than two. The list is normalised on the way in *and* on the way out, because a
+device reads it from a cache it may have written before the field existed.
+
+The six codes the pilot shipped with are seeded by the migration, and are also
+compiled into `@proofchain/shared` as `SEED_MATERIALS` — the offline fallback for
+a device that has never reached the backend.
 
 ## Integrity v1 Checks
 

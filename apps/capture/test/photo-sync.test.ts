@@ -11,6 +11,14 @@ const queue = vi.hoisted(() => ({
   pending: vi.fn(),
   pendingPhotos: vi.fn(),
   update: vi.fn(),
+  // The real guard, not a stub: these fixtures are all located records, and a
+  // mock that waved everything through would hide a sync path that had stopped
+  // checking. The one implementation detail it must mirror is that a record is
+  // sendable only with coordinates and a signature.
+  isLocated: (r: QueuedWeighIn) =>
+    typeof r.payload.lat === "number" &&
+    typeof r.payload.lng === "number" &&
+    r.signature !== null,
 }));
 
 vi.mock("../src/lib/queue", () => queue);
@@ -22,7 +30,11 @@ const PHOTO = new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0])], { type: "imag
 function record(overrides: Partial<QueuedWeighIn> = {}): QueuedWeighIn {
   return {
     id: "queued-1",
-    payload: { schema: "proofchain.weighin.v1" } as QueuedWeighIn["payload"],
+    payload: {
+      schema: "proofchain.weighin.v1",
+      lat: 6.5244,
+      lng: 3.3792,
+    } as QueuedWeighIn["payload"],
     signature: "sig",
     photo: PHOTO,
     status: "queued",

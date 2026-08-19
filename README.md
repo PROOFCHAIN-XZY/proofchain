@@ -230,11 +230,12 @@ node scripts/demo-e2e.mjs
 
 - **[Runbook](docs/runbook.md)** — How to run each service, troubleshoot Docker on this machine, fund a Stellar key.
 - **[Verification](docs/verification.md)** — How an auditor independently verifies a batch without trusting ProofChain.
-- **[Architecture](docs/architecture.md)** — Data model, the 8 database tables, integrity v1 checks, design rationale.
+- **[Architecture](docs/architecture.md)** — Data model, the 9 database tables, integrity v1 checks, design rationale.
 
 ## API Endpoints (Swagger at /docs in dev mode)
 
 ### Public (no auth required)
+- `GET /materials` — The material catalogue, retired entries included and flagged
 - `POST /events/:id/photo` — Upload photo bytes for a signed weigh-in
 - `GET /events/:id/photo` — The stored photo, if uploaded
 - `GET /batches/:id` — Fetch batch metadata
@@ -252,6 +253,24 @@ node scripts/demo-e2e.mjs
 - `POST /batches/:id/custody` — Record chain of custody
 - `POST /batches/:id/anchor-failure` — Anchor worker reports a failed attempt
   (shared worker token, not a JWT)
+
+### Materials (admin only)
+- `POST /materials` — Add a material. The code becomes permanent once a device signs it.
+- `PATCH /materials/:code` — Edit the name, field guidance or product list, or retire with `{"active": false}`
+- `DELETE /materials/:code` — Only succeeds for a code no event and no batch has used
+
+A material code is part of the signed weigh-in payload, so it is hashed into the
+Merkle root and anchored on the ledger. There is deliberately **no way to rename a
+code** — doing so would invalidate the audit report of every batch containing it.
+Retire it instead: the capture apps stop offering it, and every stored weigh-in
+keeps verifying. `name`, the field guidance and the `examples` product list are
+presentation only and safe to change at any time. The products — "milk jugs",
+"bottle caps" — are what the capture apps show a collector so they can tell what a
+code covers without knowing the resin names.
+
+Ingest (`POST /events`) accepts a retired code but not an unknown one, so a phone
+syncing a queue it signed hours ago still lands its work; opening a batch requires
+an active one. See [architecture.md](docs/architecture.md#9-materials-material_catalogue).
 
 ### Accounts
 - `POST /auth/login` — Exchange email and password for a JWT
