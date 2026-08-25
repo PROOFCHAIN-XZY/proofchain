@@ -9,7 +9,7 @@ Waste collectors record weigh-ins of recycled plastic on phones. Each weigh-in i
 A plastic credit is worth $140–800 per tonne, creating direct financial incentive to spoof weigh-ins. ProofChain's guarantee is:
 
 1. **Authenticity** — Every weigh-in is signed by an enrolled device. Tampering with the payload invalidates the signature.
-2. **Integrity** — Events pass server-side checks (geofence, weight range, duplicate detection, clock plausibility, device enrollment).
+2. **Integrity** — Events pass server-side checks (weight range, duplicate detection, clock plausibility, device enrollment).
 3. **Immutability** — The Merkle root is anchored on Stellar, proving the batch membership and order cannot be altered after sealing.
 4. **Verifiability** — Any third party can independently recompute the Merkle root from the event list, check one event's proof, and compare the root to the Stellar transaction on Horizon.
 
@@ -21,7 +21,7 @@ A plastic credit is worth $140–800 per tonne, creating direct financial incent
 ┌─────────────────────────────────────────────────────────────────┐
 │ Offline-first Capture (capture PWA + mobile Expo app)           │
 │  • Ed25519 signing on-device                                     │
-│  • GPS + photo hash + weight from scale                           │
+│  • Photo hash + weight from scale                                 │
 │  • IndexedDB queue for offline operation                          │
 └────────────────────────┬────────────────────────────────────────┘
                          │
@@ -29,7 +29,7 @@ A plastic credit is worth $140–800 per tonne, creating direct financial incent
                          │
 ┌────────────────────────▼────────────────────────────────────────┐
 │ Backend (NestJS + Postgres + Redis)                             │
-│  • Integrity v1 checks (7 checks: signature, geofence, etc.)    │
+│  • Integrity v1 checks (6 checks: signature, weight, etc.)      │
 │  • Batch management                                              │
 │  • Merkle tree sealing                                           │
 │  • Chain of custody tracking                                     │
@@ -70,7 +70,7 @@ A plastic credit is worth $140–800 per tonne, creating direct financial incent
 
 1. **Capture** — Collector uses phone/PWA to photograph a weigh-in. Device signs the payload (schema, IDs, weight, location, photo hash, timestamp, nonce) with its ed25519 private key.
 2. **Ingest** — Server receives payload + signature. Public signature verification ensures authenticity. Database check on payload hash prevents replay (replay = identical nonce).
-3. **Integrity** — Server runs 7 checks: device enrolled, signature valid, geofence (within hub radius), weight in range, not a duplicate, clock plausible, photo hash is valid sha256. Any *fail* quarantines the event; it never enters a batch.
+3. **Integrity** — Server runs 6 checks: device enrolled, signature valid, weight in range, not a duplicate, clock plausible, photo hash is valid sha256. Any *fail* quarantines the event; it never enters a batch.
 4. **Batch** — Operator opens a batch for a hub + material. Cleans events are added to the batch. Operator seals the batch, which computes a Merkle tree from the event hashes and freezes membership.
 5. **Anchor** — Background worker reads the sealed batch, submits a Stellar transaction writing the Merkle root to the ledger (via `manageData` and `memo.hash`), and verifies it back off the ledger before recording the transaction ID.
 6. **Report** — Auditor or buyer downloads the audit report for a batch. It contains all events, their Merkle proofs, the sealed root, and the Stellar transaction. The buyer can independently verify the root and proofs without trusting ProofChain.
@@ -144,7 +144,7 @@ proofchain/
    npm run seed
    ```
    The seed creates:
-   - One hub (Nairobi Pilot Hub, geofence 300 m)
+   - One hub (Nairobi Pilot Hub)
    - Two collectors (Amina Wanjiru, Joseph Otieno)
    - One enrolled ed25519 device per collector, with the private keys written to
      `apps/backend/var/seed-devices.json` so the capture app and the demo can
@@ -201,7 +201,7 @@ node scripts/demo-e2e.mjs
 ## What's Included in This Release
 
 - **Weigh-in signing** — Devices sign payloads on-device; server verifies.
-- **Integrity v1** — 7 checks covering signature, enrollment, geofence, weight, duplicates, clock, photo hash.
+- **Integrity v1** — 6 checks covering signature, enrollment, weight, duplicates, clock, photo hash.
 - **Batch sealing** — Merkle tree computation, membership freeze.
 - **Stellar anchoring** — Classic layer (`manageData` + `memo.hash`), testnet only.
 - **Independent verification** — Merkle proofs, Horizon lookup, audit report.
@@ -230,11 +230,12 @@ node scripts/demo-e2e.mjs
 
 - **[Runbook](docs/runbook.md)** — How to run each service, troubleshoot Docker on this machine, fund a Stellar key.
 - **[Verification](docs/verification.md)** — How an auditor independently verifies a batch without trusting ProofChain.
-- **[Architecture](docs/architecture.md)** — Data model, the 8 database tables, integrity v1 checks, design rationale.
+- **[Architecture](docs/architecture.md)** — Data model, the 9 database tables, integrity v1 checks, design rationale.
 
 ## API Endpoints (Swagger at /docs in dev mode)
 
 ### Public (no auth required)
+- `GET /materials` — The material catalogue, retired entries included and flagged
 - `POST /events/:id/photo` — Upload photo bytes for a signed weigh-in
 - `GET /events/:id/photo` — The stored photo, if uploaded
 - `GET /batches/:id` — Fetch batch metadata
@@ -252,6 +253,24 @@ node scripts/demo-e2e.mjs
 - `POST /batches/:id/custody` — Record chain of custody
 - `POST /batches/:id/anchor-failure` — Anchor worker reports a failed attempt
   (shared worker token, not a JWT)
+
+### Materials (admin only)
+- `POST /materials` — Add a material. The code becomes permanent once a device signs it.
+- `PATCH /materials/:code` — Edit the name, field guidance or product list, or retire with `{"active": false}`
+- `DELETE /materials/:code` — Only succeeds for a code no event and no batch has used
+
+A material code is part of the signed weigh-in payload, so it is hashed into the
+Merkle root and anchored on the ledger. There is deliberately **no way to rename a
+code** — doing so would invalidate the audit report of every batch containing it.
+Retire it instead: the capture apps stop offering it, and every stored weigh-in
+keeps verifying. `name`, the field guidance and the `examples` product list are
+presentation only and safe to change at any time. The products — "milk jugs",
+"bottle caps" — are what the capture apps show a collector so they can tell what a
+code covers without knowing the resin names.
+
+Ingest (`POST /events`) accepts a retired code but not an unknown one, so a phone
+syncing a queue it signed hours ago still lands its work; opening a batch requires
+an active one. See [architecture.md](docs/architecture.md#9-materials-material_catalogue).
 
 ### Accounts
 - `POST /auth/login` — Exchange email and password for a JWT

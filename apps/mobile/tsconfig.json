@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "lib": ["ESNext", "DOM"],
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
@@ -14,9 +17,26 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "paths": {
-      "@shared/canonical": ["../../packages/shared/src/canonical-core.ts"],
-      "@shared/types": ["../../packages/shared/src/types.ts"]
+      "@shared/canonical": [
+        "../../packages/shared/src/canonical-core.ts"
+      ],
+      "@shared/types": [
+        "../../packages/shared/src/types.ts"
+      ],
+      "@shared/materials": [
+        "../../packages/shared/src/materials.ts"
+      ],
+      "@shared/integrity-copy": [
+        "../../packages/shared/src/integrity-copy.ts"
+      ]
     }
   },
-  "include": ["index.ts", "App.tsx", "src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"]
+  "include": [
+    "index.ts",
+    "App.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "test/**/*.ts"
+  ],
+  "extends": "expo/tsconfig.base"
 }

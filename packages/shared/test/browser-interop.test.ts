@@ -16,14 +16,12 @@ import type { WeighInPayload } from "../src/types.js";
  */
 
 const payload: WeighInPayload = {
-  schema: "proofchain.weighin.v1",
+  schema: "proofchain.weighin.v2",
   collectorId: "9f1c5d2e-0000-4000-8000-000000000001",
   hubId: "803bde5d-c7f2-4f98-80b8-15d97fb06517",
   deviceId: "1c7a101f-d6d0-4039-b80f-bd4515b6bafb",
   weightKg: 12.5,
   material: "PET",
-  lat: -1.286389,
-  lng: 36.817223,
   capturedAt: "2026-08-08T09:15:00.000Z",
   photoHash: "a".repeat(64),
   nonce: "b".repeat(32),

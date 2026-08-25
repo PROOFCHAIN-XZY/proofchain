@@ -1,3 +1,4 @@
+import { describeFailures } from "@shared/integrity-copy";
 import * as queue from "./queue";
 import type { QueuedWeighIn } from "./queue";
 import type { KeyValueStore } from "./storage";
@@ -113,11 +114,17 @@ export async function uploadPhoto(
   }
 }
 
+/**
+ * What the collector is told about a rejection.
+ *
+ * Collector-facing copy, not check names: this string is rendered in the queue
+ * row on a phone held by the person who can still fix the problem, and
+ * `weight_in_range: 300 kg above hub maximum 200 kg` tells them nothing they can
+ * act on. The untranslated findings survive on the server's event record, where
+ * the dashboard shows them to operators.
+ */
 function failureSummary(response: IngestResponse): string {
-  return response.integrity.findings
-    .filter((f) => f.outcome === "fail")
-    .map((f) => `${f.check}${f.detail ? `: ${f.detail}` : ""}`)
-    .join("; ");
+  return describeFailures(response.integrity.findings);
 }
 
 /**
@@ -126,7 +133,7 @@ function failureSummary(response: IngestResponse): string {
  * A quarantined record is a settled answer, not a transport failure: the server
  * holds it but will never let it into a batch. It is marked rejected and shown
  * to the collector, because unpaid work they learn about now is work they can
- * still redo — re-weigh, or move inside the hub fence.
+ * still redo while the material is in front of them.
  */
 export async function syncPending(
   store: KeyValueStore,
@@ -190,7 +197,9 @@ export async function syncPending(
         serverEventId: response.eventId,
         syncedAt: new Date().toISOString(),
         photoUploadedAt: photoUploaded ? new Date().toISOString() : null,
-        lastError: photoUploaded ? null : "weigh-in synced; photo upload still pending",
+        lastError: photoUploaded
+          ? null
+          : "Weigh-in recorded. Its photo will finish uploading on the next connection.",
       });
       outcome.synced += 1;
       if (photoUploaded) outcome.photosUploaded += 1;
@@ -255,11 +264,36 @@ export function fetchCollectors(
   return authedGet(backendUrl, "/collectors", token);
 }
 
-export function fetchHubs(
+/**
+ * The hub list for enrolment, with the weight bounds a device checks against.
+ *
+ * The bounds come from `numeric` columns, which node-postgres hands back as
+ * strings; the backend narrows them, but this client does not get to assume
+ * that held. They are narrowed again here, at the boundary, because downstream
+ * they are compared against a scale reading and formatted into the copy a
+ * collector reads.
+ */
+export async function fetchHubs(
   backendUrl: string,
   token: string,
-): Promise<{ id: string; code: string; name: string; lat: number; lng: number }[]> {
-  return authedGet(backendUrl, "/hubs", token);
+): Promise<{ id: string; code: string; name: string; minWeightKg: number; maxWeightKg: number }[]> {
+  const hubs = await authedGet<
+    {
+      id: string;
+      code: string;
+      name: string;
+      minWeightKg: string | number;
+      maxWeightKg: string | number;
+    }[]
+  >(backendUrl, "/hubs", token);
+
+  return hubs.map((h) => ({
+    id: h.id,
+    code: h.code,
+    name: h.name,
+    minWeightKg: Number(h.minWeightKg),
+    maxWeightKg: Number(h.maxWeightKg),
+  }));
 }
 
 export async function enrolDevice(

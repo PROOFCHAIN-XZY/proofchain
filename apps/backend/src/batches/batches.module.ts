@@ -11,6 +11,7 @@ import { BatchesService } from "./batches.service";
 import { BatchesController } from "./batches.controller";
 import { AuthModule } from "../auth/auth.module";
 import { LedgerModule } from "../ledger/ledger.module";
+import { MaterialsModule } from "../materials/materials.module";
 
 @Module({
   imports: [
@@ -24,6 +25,8 @@ import { LedgerModule } from "../ledger/ledger.module";
     AuthModule,
     // Verification reads the anchor back off Horizon before reporting it.
     LedgerModule,
+    // Opening a batch requires a material that is in the catalogue and active.
+    MaterialsModule,
   ],
   controllers: [BatchesController],
   providers: [BatchesService, AnchorAttemptsService],

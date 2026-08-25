@@ -68,9 +68,6 @@ describe("AnchorAttempts migration", () => {
     const hub = await dataSource.getRepository(HubEntity).save({
       code: "HUB-MIG",
       name: "Migration Hub",
-      lat: 0,
-      lng: 0,
-      geofenceRadiusM: 300,
       minWeightKg: 0.1,
       maxWeightKg: 500,
     } as HubEntity);

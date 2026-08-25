@@ -30,8 +30,17 @@ export interface DeviceMeta {
   collectorName: string;
   hubId: string;
   hubName: string;
-  hubLat: number;
-  hubLng: number;
+  /**
+   * The hub's sanity bounds for one weigh-in, recorded at enrolment so capture
+   * can refuse a weight the hub will refuse — while the material is still on
+   * the scale rather than hours later at sync.
+   *
+   * Optional because a phone enrolled before these were stored still has a
+   * valid identity and must keep capturing. Absent means "not known here", and
+   * an unknown bound is never enforced: the server holds the real ones.
+   */
+  minWeightKg?: number;
+  maxWeightKg?: number;
 }
 
 export interface SecureStorePort {

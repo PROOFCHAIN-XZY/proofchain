@@ -95,7 +95,6 @@ export default async function EventsPage({
                 <th>Captured</th>
                 <th className="num">Weight</th>
                 <th>Material</th>
-                <th>Location</th>
                 <th>Integrity</th>
                 <th>Failed checks</th>
                 <th>Batch</th>
@@ -109,9 +108,6 @@ export default async function EventsPage({
                     <td className="hash">{formatDateTime(e.capturedAt)}</td>
                     <td className="num">{formatKg(e.weightKg)} kg</td>
                     <td>{e.material}</td>
-                    <td className="hash">
-                      {e.lat.toFixed(5)}, {e.lng.toFixed(5)}
-                    </td>
                     <td>
                       <span
                         className="pill"

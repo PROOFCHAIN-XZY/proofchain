@@ -1,7 +1,4 @@
 import {
-  isValidLatLng,
-  isWithinGeofence,
-  haversineMetres,
   verifyWeighInSignature,
   type IntegrityFinding,
   type IntegrityVerdict,
@@ -33,9 +30,6 @@ export interface IntegrityContext {
   collector: { id: string; active: boolean } | null;
   hub: {
     id: string;
-    lat: number;
-    lng: number;
-    geofenceRadiusM: number;
     minWeightKg: number;
     maxWeightKg: number;
   } | null;
@@ -55,7 +49,6 @@ export function evaluateIntegrity(
   const findings: IntegrityFinding[] = [
     checkDeviceEnrolled(payload, ctx),
     checkSignature(payload, signature, ctx),
-    checkGeofence(payload, ctx),
     checkWeightRange(payload, ctx),
     checkDuplicate(ctx),
     checkClock(payload, ctx),
@@ -111,28 +104,6 @@ function checkSignature(
         outcome: "fail",
         detail: "signature does not match the enrolled device key",
       };
-}
-
-function checkGeofence(payload: WeighInPayload, ctx: IntegrityContext): IntegrityFinding {
-  if (!isValidLatLng(payload.lat, payload.lng)) {
-    return { check: "geofence_ok", outcome: "fail", detail: "coordinates are not valid" };
-  }
-  if (!ctx.hub) {
-    return { check: "geofence_ok", outcome: "fail", detail: "unknown hub" };
-  }
-  const point = { lat: payload.lat, lng: payload.lng };
-  const centre = { lat: ctx.hub.lat, lng: ctx.hub.lng };
-
-  if (isWithinGeofence(point, centre, ctx.hub.geofenceRadiusM)) {
-    return { check: "geofence_ok", outcome: "pass" };
-  }
-
-  const distance = Math.round(haversineMetres(point.lat, point.lng, centre.lat, centre.lng));
-  return {
-    check: "geofence_ok",
-    outcome: "fail",
-    detail: `${distance} m from hub (fence ${ctx.hub.geofenceRadiusM} m)`,
-  };
 }
 
 function checkWeightRange(payload: WeighInPayload, ctx: IntegrityContext): IntegrityFinding {

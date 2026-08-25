@@ -192,21 +192,45 @@ main {
 
 .chip {
   min-height: var(--touch);
-  padding: 0 1rem;
+  /* Vertical padding rather than a fixed line: a chip now stacks a material name
+     over its code, and the name wraps on a narrow phone. */
+  padding: 0.4rem 1rem;
   border: 2px solid var(--rule);
   background: var(--surface);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
   border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.05rem;
+  text-align: left;
   transition:
     transform 120ms cubic-bezier(0.16, 1, 0.3, 1),
     background-color 120ms ease;
 }
 
+/* The signed code, under the human name. Monospace because it is an identifier
+   an auditor will match against a report, not prose. */
+.chip small {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
 .chip[aria-pressed="true"] {
   background: var(--ink);
   color: var(--bone);
+}
+
+/* --ink-soft is tuned for the light surface and goes muddy on the inked chip. */
+.chip[aria-pressed="true"] small {
+  color: var(--bone);
+  opacity: 0.7;
 }
 
 .chip:active {
@@ -216,6 +240,40 @@ main {
 .chip:focus-visible {
   outline: 3px solid var(--signal);
   outline-offset: 2px;
+}
+
+/* Field guidance under a control — what actually counts as the selected
+   material. Sized to be readable at arm's length in daylight without competing
+   with the label above it. */
+.hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  max-width: 46ch;
+}
+
+/* The products a material covers, under the guidance line. Tags rather than a
+   sentence: a collector matches the object in their hand against this list at a
+   glance, and wrapping prose makes them read instead. */
+.products {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.products li {
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  white-space: nowrap;
 }
 
 button.action {
@@ -330,6 +388,31 @@ select {
 .meta strong {
   color: var(--ink);
   font-weight: 700;
+}
+
+/*
+ * Sensor status, sitting directly under the readout it belongs to. A camera
+ * failure has its own remedy, so it gets its own line rather than taking turns
+ * in the single notice slot at the top of the screen.
+ */
+.slot-note {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  padding: 0.25rem 0.4rem;
+  border-left: 3px solid currentColor;
+}
+
+.slot-note[data-tone="bad"] {
+  color: var(--bad);
+}
+
+.slot-note[data-tone="warn"] {
+  color: var(--warn);
+}
+
+.slot-note[hidden] {
+  display: none;
 }
 
 /* ---------- queue ---------- */
@@ -449,4 +532,87 @@ ul.records li[data-status="rejected"]::before {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+}
+
+/* ---------- workstation layout ---------- */
+
+/*
+ * Above ~62rem this is no longer a phone in a gloved hand — it is a hub
+ * supervisor's desktop, where a 34rem column stranded mid-monitor reads as a
+ * broken page rather than a deliberate one.
+ *
+ * The capture form and the queue are the two things a supervisor watches
+ * together, so they become columns rather than a scroll: sign a weigh-in on the
+ * left, watch it land on the right without either leaving the viewport. The
+ * split is 1.05/0.95 rather than even, because the form is where the work
+ * happens and the ledger is where it is confirmed.
+ *
+ * Nothing about the phone layout changes. Touch targets, numerals and rule
+ * weights are untouched; this only spends horizontal room a phone never has.
+ */
+@media (min-width: 62rem) {
+  body {
+    padding: clamp(1.5rem, 1rem + 2.5vw, 3.5rem) var(--space);
+  }
+
+  #app {
+    max-width: 76rem;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(21rem, 0.95fr);
+    grid-template-areas:
+      "masthead masthead"
+      "capture  queue";
+    /* Same hard-offset language as .action, scaled to the shell: the panel sits
+       on the bone rather than floating above it. */
+    border: 1px solid var(--rule);
+    box-shadow: 6px 6px 0 var(--rule);
+  }
+
+  /* Sticky is a small-screen affordance: the masthead is always in view here. */
+  .masthead {
+    grid-area: masthead;
+    position: static;
+  }
+
+  main {
+    grid-area: capture;
+    padding: calc(var(--space) * 1.5);
+    /* The column rule replaces the queue's horizontal border — same 3px weight,
+       so the two panels stay as firmly separated as they are when stacked. */
+    border-right: 3px solid var(--rule);
+  }
+
+  .queue {
+    grid-area: queue;
+    border-top: 0;
+    padding: calc(var(--space) * 1.5);
+    /* Sunk, per the token's contract: present, but not where the work happens. */
+    background: var(--bone-sunk);
+    align-content: start;
+    gap: 1rem;
+  }
+
+  /* There is room for the ledger to breathe, but it must not drive the page
+     height — the form column is the one that sets it. */
+  ul.records {
+    max-height: none;
+  }
+}
+
+/*
+ * The ledger panel's anchor. Without it the tallies float at the top of a large
+ * empty surface on desktop and read as leftover chrome rather than as a titled
+ * panel; on a phone it names the section that follows the commit button.
+ */
+.panel-title {
+  font-family: var(--mono);
+  font-size: var(--label);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  font-weight: 400;
+  margin: 0 0 0.25rem;
+  padding-bottom: 0.625rem;
+  border-bottom: 1px solid var(--rule-soft);
 }

@@ -15,6 +15,7 @@ import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
 import {
   buildAnchorAttemptsService,
+  buildMaterialsService,
   buildReportsService,
   stubLedgerVerification,
 } from "./support/services";
@@ -41,6 +42,7 @@ beforeEach(async () => {
     db.dataSource,
     stubLedgerVerification(),
     buildAnchorAttemptsService(db.dataSource),
+    buildMaterialsService(db.dataSource),
   );
   seeded = await seedHub(db.dataSource);
 });

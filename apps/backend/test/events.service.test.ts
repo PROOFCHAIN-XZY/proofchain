@@ -59,7 +59,7 @@ describe("EventsService.ingest", () => {
   });
 
   it("rejects an unknown payload schema outright", async () => {
-    const payload = seeded.payload({ schema: "proofchain.weighin.v2" as never });
+    const payload = seeded.payload({ schema: "proofchain.weighin.v3" as never });
 
     // Unlike an integrity failure, an unreadable schema cannot be judged at
     // all — storing it would put a record in the table nothing can interpret.
@@ -70,13 +70,13 @@ describe("EventsService.ingest", () => {
 });
 
 describe("EventsService.ingest — quarantine", () => {
-  it("stores a weigh-in outside the geofence rather than dropping it", async () => {
-    // ~3 km north of the hub, well outside the 300 m fence.
-    const result = await ingest({ lat: seeded.hub.lat + 0.027 });
+  it("stores a weigh-in failing a sanity check rather than dropping it", async () => {
+    // Far above the hub's plausible maximum for a single weigh-in.
+    const result = await ingest({ weightKg: 5000 });
 
     expect(result.quarantined).toBe(true);
     expect(result.integrity.outcome).toBe("fail");
-    expect(result.integrity.findings.some((f) => f.check === "geofence_ok")).toBe(true);
+    expect(result.integrity.findings.some((f) => f.check === "weight_in_range")).toBe(true);
 
     // Kept, not discarded: quarantined records are the raw material of fraud
     // detection and of the "% captured cleanly" pilot metric.

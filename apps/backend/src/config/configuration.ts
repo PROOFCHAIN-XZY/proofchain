@@ -1,4 +1,7 @@
-import { resolvePostgresConnection, type PostgresConnection } from "../database/postgres-connection";
+import {
+  resolvePostgresConnection,
+  type PostgresConnection,
+} from "../database/postgres-connection";
 import { parseTrustProxy, type TrustProxySetting } from "./trust-proxy";
 
 export interface AppConfig {
@@ -77,7 +80,9 @@ export function loadConfig(): AppConfig {
   const nodeEnv = (process.env.NODE_ENV ?? "development") as AppConfig["nodeEnv"];
   const isProduction = nodeEnv === "production";
 
-  const jwtSecret = isProduction ? required("JWT_SECRET") : (process.env.JWT_SECRET ?? "dev-secret");
+  const jwtSecret = isProduction
+    ? required("JWT_SECRET")
+    : (process.env.JWT_SECRET ?? "dev-secret");
   if (isProduction && jwtSecret === "change-me-in-production") {
     throw new Error("JWT_SECRET is still the placeholder value; set a real secret");
   }

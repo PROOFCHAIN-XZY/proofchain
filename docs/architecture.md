@@ -3,7 +3,7 @@
 **Technical design and data model for ProofChain.**
 
 This document describes:
-1. The database schema (8 tables)
+1. The database schema (9 tables)
 2. The integrity v1 checks and threat model
 3. Why classic Stellar and not Soroban
 4. Known limitations and future work
@@ -12,12 +12,11 @@ This document describes:
 
 The schema is designed backwards from the audit artifact. Every table exists because an auditor, a PRO, or a credit buyer will eventually ask about it.
 
-### The 8 Tables
+### The 9 Tables
 
 #### 1. Hubs (collection_points)
 
 Physical locations where waste is collected. A hub defines:
-- A geofence (latitude, longitude, radius in meters)
 - Weight bounds per weigh-in (minimum, maximum in kg)
 
 ```sql
@@ -25,16 +24,13 @@ CREATE TABLE hubs (
   id uuid PRIMARY KEY,
   code varchar UNIQUE,           -- Short identifier (e.g., "nairobi-pilot")
   name varchar,                  -- "Nairobi Pilot Hub"
-  lat double precision,          -- -1.286389
-  lng double precision,          -- 36.817223
-  geofenceRadiusM int DEFAULT 250,
   minWeightKg numeric(10,3) DEFAULT 0.1,
-  maxWeightKg numeric(10,3) DEFAULT 500,
+  maxWeightKg numeric(10,3) DEFAULT 10000,
   createdAt timestamptz
 );
 ```
 
-**Why it matters:** Collectors must report from within the hub's geofence. Out-of-area weigh-ins indicate either GPS spoofing or collection from an unapproved location.
+**Why it matters:** A batch is scoped to one hub, so hub membership is what makes a batch's provenance stateable.
 
 #### 2. Collectors (waste_collection_workers)
 
@@ -91,7 +87,7 @@ CREATE TABLE collection_events (
   deviceId uuid REFERENCES devices,
   batchId uuid REFERENCES batches NULL,  -- Set when added to a batch; frozen when batch seals
   weightKg numeric(10,3),
-  material varchar,              -- PET | HDPE | LDPE | PP | PS | MIXED
+  material varchar,              -- a code from the materials catalogue (table 9)
   lat double precision,
   lng double precision,
   capturedAt timestamptz,        -- Device clock
@@ -124,7 +120,7 @@ Groups of events aggregated for processing. Lifecycle:
 CREATE TABLE batches (
   id uuid PRIMARY KEY,
   hubId uuid REFERENCES hubs,
-  material varchar,              -- All events in a batch must match
+  material varchar,              -- a catalogue code; all events in a batch must match
   status varchar DEFAULT 'open', -- open | sealed | processed | sold
   totalWeightKg numeric(12,3) DEFAULT 0,
   eventCount int DEFAULT 0,
@@ -197,6 +193,64 @@ CREATE TABLE users (
 
 **Why it matters:** Operators manage batches (seal, custody). Auditors have read-only access. Admins enroll new devices.
 
+#### 9. Materials (material_catalogue)
+
+The material types a collector may choose from, maintained by an administrator at
+runtime rather than compiled into the apps.
+
+```sql
+CREATE TABLE materials (
+  code varchar(16) PRIMARY KEY,  -- "PET" — signed into payloads, permanent
+  name varchar(120),             -- "Mixed plastic" — presentation only
+  description varchar(300),      -- field guidance, nullable
+  examples text[] DEFAULT '{}',  -- products a collector recognises: {"Milk jugs"}
+  active boolean DEFAULT true,   -- false = retired, hidden from new capture
+  "sortOrder" int DEFAULT 100,
+  createdAt timestamptz,
+  updatedAt timestamptz,
+  CONSTRAINT "CHK_materials_code_shape"
+    CHECK (code ~ '^[A-Z0-9][A-Z0-9_-]{1,15}$')
+);
+```
+
+**Why it matters, and why it is shaped like this:** `material` is a field in the
+signed weigh-in payload, so a code is hashed into the Merkle leaf and anchored on
+the ledger. Three consequences follow, and every design decision here is one of
+them:
+
+1. **Codes are append-only.** There is no rename endpoint. Renaming a code that
+   has been anchored would invalidate the audit report of every batch containing
+   it, and no migration can fix that — the root is on a public ledger. The code is
+   the primary key partly to make this structural.
+2. **Retiring is not deleting.** `active: false` removes a material from the
+   capture pickers and touches no stored event. Outright deletion is allowed only
+   for a code no event and no batch has ever used; anything else returns 409 with
+   the reference counts and a pointer to retirement.
+3. **No foreign key from `collection_events.material` or `batches.material`.**
+   This is deliberate. A signed material code is a historical fact, not a
+   reference to current configuration, and a FK would let a catalogue edit
+   cascade into — or be blocked by — anchored evidence. Existence is checked at
+   ingest instead, where it can be reported as a 400.
+
+The two gates differ on purpose:
+
+| Path | Gate | Why |
+|---|---|---|
+| `POST /events` (ingest) | code must **exist** | Capture is offline-first. A phone can hold a queue signed hours ago against a catalogue that has since changed; rejecting those records would destroy already-signed field work nobody can redo. |
+| `POST /batches` (open) | code must exist **and be active** | An operator is making a forward-looking choice with the live catalogue in front of them, so a retired code is a mistake to block. |
+
+`examples` is the products a collector would name — "milk jugs", "bottle caps" —
+and the capture apps show them as tags under the picker. It is presentation, like
+`name` and `description`: never signed, never hashed, and safe for an operator to
+correct when the local waste stream does not look like the one the seed data was
+written for. Always an array, never null, so a picker has one empty state rather
+than two. The list is normalised on the way in *and* on the way out, because a
+device reads it from a cache it may have written before the field existed.
+
+The six codes the pilot shipped with are seeded by the migration, and are also
+compiled into `@proofchain/shared` as `SEED_MATERIALS` — the offline fallback for
+a device that has never reached the backend.
+
 ## Integrity v1 Checks
 
 Integrity checks run at ingest on every weigh-in. They are deliberately **pure** (no DB state, no crypto beyond signature verification, no system clock beyond receipt time) so every check is:
@@ -206,7 +260,7 @@ Integrity checks run at ingest on every weigh-in. They are deliberately **pure**
 
 Any *fail* quarantines the event; it can never enter a batch. A *warn* is logged but doesn't block (e.g., offline sync).
 
-### The 7 Checks
+### The 6 Checks
 
 #### 1. Device Enrolled (`device_enrolled`)
 
@@ -230,31 +284,23 @@ Any *fail* quarantines the event; it can never enter a batch. A *warn* is logged
 
 **Note:** Canonical payload is defined in `packages/shared/src/canonical-core.ts`. All signers (mobile app, PWA, external integrations) must use the same encoding (deterministic JSON, field order) so signatures are verifiable.
 
-#### 3. Geofence OK (`geofence_ok`)
+#### 3. Weight in Range (`weight_in_range`)
 
-**Defends against:** Collecting plastic from outside the hub's service area (implies either GPS spoofing or unauthorized collection).
-
-- The weigh-in's latitude and longitude must be valid coordinates
-- The hub must exist
-- The event's location must be within the hub's geofence (great-circle distance ≤ radius)
-
-**Outcome:** *fail* if coordinates are invalid, hub is unknown, or distance exceeds the geofence radius.
-
-**Tolerance:** The `hubs.geofence_radius_m` column defaults to 250 m; the seeded Nairobi Pilot Hub sets 300 m explicitly, and each hub is expected to be tuned to its own site. The radius has to absorb ordinary GPS jitter (±10 m in the open, far worse between buildings or under a roof) while still catching a weigh-in claimed from the wrong part of town. Set it too tight and honest collectors get quarantined; too loose and the check stops meaning anything.
-
-#### 4. Weight in Range (`weight_in_range`)
-
-**Defends against:** Claiming an implausible weight (e.g., 950 kg for a single weigh-in when the hub's max is 500 kg).
+**Defends against:** Claiming an implausible weight (e.g., 40 tonnes for a single weigh-in when the hub's max is 10 tonnes).
 
 - Weight must be positive
 - Weight must be ≥ hub's minimum (default 0.1 kg, avoids scale noise)
-- Weight must be ≤ hub's maximum (default 500 kg, a single collector can't carry more)
+- Weight must be ≤ hub's maximum (default 10,000 kg — one delivery to one hub, not one truckload of many)
 
 **Outcome:** *fail* if weight is invalid, below minimum, or above maximum.
 
 **Note:** These bounds are per-weigh-in, not per-batch. A batch can accumulate multiple weigh-ins up to any weight.
 
-#### 5. Not a Duplicate (`not_duplicate`)
+**The ceiling was 500 kg until the HubWeightCeiling migration.** That figure assumed a weigh-in was what one collector carries to a hand scale, and it quarantined real aggregated deliveries. The migration raises both the column default and every existing hub below 10 t; hubs an operator set higher are left alone. Events quarantined under the old ceiling are not revived — a stored integrity verdict describes checks as they ran, and rewriting one would make the audit trail lie.
+
+**Capture devices hold these bounds too.** `GET /hubs/directory` publishes them, both capture apps check a weight against them before signing, and the server checks again at ingest. The client check is a courtesy to the collector, not a security control: it turns a rejection that arrives hours later, with the material gone, into a correction they can still make. The server's check is the one that decides.
+
+#### 4. Not a Duplicate (`not_duplicate`)
 
 **Defends against:** Replaying an identical signed weigh-in to create credit out of thin air.
 
@@ -267,7 +313,7 @@ Any *fail* quarantines the event; it can never enter a batch. A *warn* is logged
 
 **Why it works:** The nonce is random and unique per weigh-in. The payload includes the nonce. An attacker who replays the same payload (with the same nonce, weight, location, timestamp) will hash to the same payload hash and be detected. An attacker who changes the nonce must re-sign (they don't have the private key).
 
-#### 6. Clock Plausible (`clock_plausible`)
+#### 5. Clock Plausible (`clock_plausible`)
 
 **Defends against:** Backdated or future-dated weigh-ins (indicates either device clock drift or an attempt to forge a timestamp).
 
@@ -282,7 +328,7 @@ Any *fail* quarantines the event; it can never enter a batch. A *warn* is logged
 
 **Tolerance:** ±15 seconds accommodates NTP clock skew and network latency without being so loose that an old backdated event looks fresh.
 
-#### 7. Photo Present (`photo_present`)
+#### 6. Photo Present (`photo_present`)
 
 **Defends against:** Missing or invalid photo hash (indicates metadata tampering or a misconfigured device).
 
@@ -305,9 +351,9 @@ Each event's integrity verdict is stored as a JSONB object:
       "outcome": "pass"
     },
     {
-      "check": "geofence_ok",
+      "check": "weight_in_range",
       "outcome": "fail",
-      "detail": "1250 m from hub (fence 250 m)"
+      "detail": "40000 kg above hub maximum 10000 kg"
     },
     ...
   ]
@@ -397,7 +443,7 @@ const tx = new TransactionBuilder(account, {
 ### 1. Timestamp-Only Integrity
 
 Integrity v1 does not verify photo content, material type, or weight calibration. It only checks:
-- Metadata plausibility (signature, enrollment, geofence, weight bounds, timestamp)
+- Metadata plausibility (signature, enrollment, weight bounds, timestamp)
 - Absence of known tampering (no replay, valid hash format)
 
 A rogue device with a calibrated scale can report any weight it chooses (within the hub's range). Photo hashing protects against tampering post-capture, but the photo itself is not analyzed.

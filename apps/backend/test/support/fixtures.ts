@@ -21,10 +21,9 @@ import {
  *
  * Every builder takes overrides so a test can state only the field under test.
  * That is the difference between a test that reads as "a weigh-in 400 metres
- * outside the geofence" and one that reads as forty lines of unrelated setup.
+ * over the weight limit" and one that reads as forty lines of unrelated setup.
  */
 
-export const NAIROBI = { lat: -1.2921, lng: 36.8219 } as const;
 
 export interface SeededHub {
   hub: HubEntity;
@@ -51,9 +50,6 @@ export async function seedHub(
   const hub = await dataSource.getRepository(HubEntity).save({
     code: `HUB-${randomUUID().slice(0, 8)}`,
     name: "Test Hub",
-    lat: NAIROBI.lat,
-    lng: NAIROBI.lng,
-    geofenceRadiusM: 300,
     minWeightKg: 0.1,
     maxWeightKg: 500,
     ...overrides.hub,
@@ -66,8 +62,6 @@ export async function seedHub(
       .padStart(8, "0")}`,
     cooperativeId: null,
     kycLevel: "basic",
-    homeLat: null,
-    homeLng: null,
     active: true,
     ...overrides.collector,
   } as CollectorEntity);
@@ -87,14 +81,12 @@ export async function seedHub(
     device,
     sign: (payload) => signWeighIn(payload, keypair.privateKey),
     payload: (o = {}) => ({
-      schema: "proofchain.weighin.v1",
+      schema: "proofchain.weighin.v2",
       collectorId: collector.id,
       hubId: hub.id,
       deviceId: device.id,
       weightKg: 12.5,
       material: "PET",
-      lat: hub.lat,
-      lng: hub.lng,
       capturedAt: new Date().toISOString(),
       photoHash: photoHashOf(`photo-${randomUUID()}`),
       nonce: generateNonce(),
@@ -130,8 +122,6 @@ export async function insertEvent(
     batchId: null,
     weightKg: payload.weightKg,
     material: payload.material,
-    lat: payload.lat,
-    lng: payload.lng,
     capturedAt: new Date(payload.capturedAt),
     receivedAt: new Date(),
     photoHash: payload.photoHash,

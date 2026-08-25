@@ -35,14 +35,12 @@ function fixedRandom(byte: number) {
 
 function payload(): WeighInPayload {
   return {
-    schema: "proofchain.weighin.v1",
+    schema: "proofchain.weighin.v2",
     collectorId: "c1",
     hubId: "h1",
     deviceId: "d1",
     weightKg: 12.345,
     material: "PET",
-    lat: -1.286389,
-    lng: 36.817223,
     capturedAt: "2026-08-08T10:00:00.000Z",
     photoHash: "a".repeat(64),
     nonce: "b".repeat(32),

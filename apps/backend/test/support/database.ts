@@ -1,7 +1,8 @@
 import { newDb, type IMemoryDb } from "pg-mem";
 import { DataSource } from "typeorm";
 import { randomUUID } from "node:crypto";
-import { ALL_ENTITIES } from "../../src/database/entities";
+import { SEED_MATERIALS } from "@proofchain/shared";
+import { ALL_ENTITIES, MaterialEntity } from "../../src/database/entities";
 
 /**
  * An in-process Postgres for service tests.
@@ -62,8 +63,26 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   await dataSource.initialize();
   await dataSource.synchronize();
 
-  // Snapshot the empty schema so reset() is a restore rather than a rebuild;
-  // synchronize() dominates the runtime of a suite that resets per test.
+  // The material catalogue, seeded before the snapshot so every reset() restores
+  // it. synchronize() builds the table from the entity but inserts nothing,
+  // whereas a real database gets these rows from the Materials migration — and
+  // ingest rejects a material the catalogue does not know, so without this every
+  // weigh-in fixture in every suite would 400. Part of the schema, in effect,
+  // not a per-test fixture.
+  await dataSource.getRepository(MaterialEntity).insert(
+    SEED_MATERIALS.map((m) => ({
+      code: m.code,
+      name: m.name,
+      description: m.description,
+      examples: m.examples,
+      active: m.active,
+      sortOrder: m.sortOrder,
+    })),
+  );
+
+  // Snapshot the seeded-but-otherwise-empty schema so reset() is a restore rather
+  // than a rebuild; synchronize() dominates the runtime of a suite that resets
+  // per test.
   const empty = db.backup();
 
   return {
