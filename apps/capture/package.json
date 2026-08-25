@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.6.3",
     "vite": "^6.0.7",
     "vitest": "^2.1.8"

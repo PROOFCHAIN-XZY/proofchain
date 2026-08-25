@@ -6,8 +6,22 @@
  * demands. Build backwards from the audit artifact.
  */
 
-export const MATERIAL_TYPES = ["PET", "HDPE", "LDPE", "PP", "PS", "MIXED"] as const;
-export type MaterialType = (typeof MATERIAL_TYPES)[number];
+/**
+ * A material code, as signed into the payload.
+ *
+ * This was a closed union of six literals until the catalogue moved into the
+ * database. It cannot stay one: an operator can now add a code at runtime, and a
+ * union compiled last week has no way to name it. Validation therefore moved
+ * from the type system to two runtime layers — `MATERIAL_CODE_PATTERN` for
+ * shape, and a catalogue lookup for existence — which is where it has to live
+ * once the set is data rather than code.
+ *
+ * The wire format did not change. A code was serialised as a JSON string before
+ * and is serialised as a JSON string now, so every root anchored under the old
+ * union still recomputes identically. See `./materials.js` for why codes are
+ * append-only.
+ */
+export type MaterialType = string;
 
 export const BATCH_STATUSES = ["open", "sealed", "processed", "sold"] as const;
 export type BatchStatus = (typeof BATCH_STATUSES)[number];
@@ -24,7 +38,6 @@ export type StellarNetwork = "testnet" | "public";
 export const INTEGRITY_CHECKS = [
   "signature_valid",
   "device_enrolled",
-  "geofence_ok",
   "weight_in_range",
   "not_duplicate",
   "clock_plausible",
@@ -53,8 +66,6 @@ export interface Collector {
   phone: string;
   cooperativeId?: string | null;
   kycLevel: KycLevel;
-  homeLat: number;
-  homeLng: number;
   active: boolean;
   createdAt: string;
 }
@@ -69,13 +80,10 @@ export interface Device {
   revokedAt?: string | null;
 }
 
-/** A physical collection hub, with the geofence events must fall inside. */
+/** A physical collection hub. */
 export interface Hub {
   id: string;
   name: string;
-  lat: number;
-  lng: number;
-  geofenceRadiusM: number;
   /** Sanity bounds for a single weigh-in at this hub, in kilograms. */
   minWeightKg: number;
   maxWeightKg: number;
@@ -86,14 +94,12 @@ export interface Hub {
  * signature and must never be treated as attested.
  */
 export interface WeighInPayload {
-  schema: "proofchain.weighin.v1";
+  schema: "proofchain.weighin.v2";
   collectorId: string;
   hubId: string;
   deviceId: string;
   weightKg: number;
   material: MaterialType;
-  lat: number;
-  lng: number;
   /** Device clock, ISO-8601 UTC. Cross-checked against server receipt time. */
   capturedAt: string;
   /** sha256 of the weigh-in photo bytes; the photo itself stays off-chain. */
@@ -118,8 +124,6 @@ export interface CollectionEvent {
   batchId?: string | null;
   weightKg: number;
   material: MaterialType;
-  lat: number;
-  lng: number;
   capturedAt: string;
   receivedAt: string;
   photoHash: string;

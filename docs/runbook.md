@@ -385,6 +385,34 @@ systemctl --user start docker-desktop
 
 Then retry your docker command.
 
+### "fetch failed" to Horizon or Friendbot — but curl works
+
+**Symptom:** `stellar:account` or the ledger read-back fail with `fetch failed` /
+`ETIMEDOUT`, while `curl` to the
+same URL from the same machine returns 200. The give-away is the timing: Node
+fails in **well under a second**, which is a connect failure, not a timeout.
+
+**Cause:** the hosts are dual-stack, the network's IPv6 path is black-holed, and
+Node prefers the AAAA record. `curl` picks IPv4. Common on phone tethering and
+some mobile ISPs. Confirm with:
+
+```bash
+getent ahosts horizon-testnet.stellar.org        # shows both A and AAAA
+node -e 'fetch("https://horizon-testnet.stellar.org/").then(r=>console.log(r.status)).catch(e=>console.log("fail",e.cause?.code))'
+node --dns-result-order=ipv4first -e 'fetch("https://horizon-testnet.stellar.org/").then(r=>console.log(r.status))'
+```
+
+**Solution:** prefer IPv4 for outbound calls:
+
+```bash
+export NODE_OPTIONS=--dns-result-order=ipv4first
+```
+
+Related: on a slow uplink the default timeouts are too tight. Horizon has been
+measured at 11.6 s on a tethered link, where the 8 s `HORIZON_TIMEOUT_MS` default
+silently degrades every audit report's ledger confirmation to "unchecked —
+Horizon unreachable". Raise `HORIZON_TIMEOUT_MS` to 20000 on such a connection.
+
 ### "Database migrations failed"
 
 **Symptom:** `TypeORM migration error` or `table already exists`
@@ -658,12 +686,10 @@ Still outstanding, and none of it is on the deployment path:
 
 ## Testing the capture PWA on a real phone
 
-Geolocation, the camera and service workers are all gated behind a **secure
-context**: HTTPS, or `localhost`. A phone opening the app over the office wifi at
-`http://192.168.x.x:3002` is an insecure origin, and the browser will report GPS
-as "permission denied" no matter what the phone's settings say. The app detects
-this and shows a banner naming HTTPS as the cause, rather than letting the
-collector hunt through phone settings.
+The camera and service workers are both gated behind a **secure context**:
+HTTPS, or `localhost`. A phone opening the app over the office wifi at
+`http://192.168.x.x:3002` is an insecure origin, so the camera is refused and the
+service worker never registers — which takes the offline queue with it.
 
 Serve it over HTTPS instead:
 
@@ -673,7 +699,7 @@ npm run dev:capture:https      # or, in apps/capture: npm run preview:https
 
 Vite prints a Network URL such as `https://192.168.46.157:3002/`. The
 certificate is self-signed, so the phone shows a warning once — accept it, and
-the origin becomes a real secure context with working GPS and offline support.
+the origin becomes a real secure context with a working camera and offline support.
 
 Two things to remember:
 
@@ -688,57 +714,80 @@ An alternative for a USB-connected Android device is `adb reverse tcp:3002
 tcp:3002` (and `tcp:3000` for the API), which lets the phone reach the app at
 `http://localhost:3002` — already a secure context, no certificate needed.
 
-## Setting the hub location
+## Managing the material catalogue
 
-Weigh-ins are geofenced against a hub, so a hub on the wrong continent
-quarantines everything a developer captures. The seed defaults to Nairobi
-(the pilot site); there are two ways to point it somewhere else.
+The materials collectors can choose from live in the database, not in the apps.
+An administrator maintains them at **Dashboard → Materials**, or over the API.
 
-**Before seeding** — environment variables:
+### The one rule
+
+A material **code** is part of the signed weigh-in payload, so it is hashed into
+the Merkle root and anchored on the ledger. It cannot be renamed or deleted once a
+collector has signed it — that would invalidate the audit report of every batch
+containing it, and no migration can undo a root that is already on a public
+ledger.
+
+So the catalogue separates three things:
+
+| Field | Changeable? | Notes |
+|---|---|---|
+| `code` | **Never** | `PET`. Signed, hashed, anchored. Append-only. |
+| `name` | Freely | `Clear drink bottles`. Presentation only, never signed. |
+| `active` | Freely | `false` retires it: hidden from capture, history untouched. |
+
+### Add a material
 
 ```bash
-HUB_LAT=9.06035 HUB_LNG=7.46783 HUB_GEOFENCE_M=500 npm run seed
+curl -X POST https://<api>/materials -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"code":"PVC","name":"Pipe and profile",
+       "description":"Rigid pipe, window profile. Resin code 3.","sortOrder":70}'
 ```
 
-**After seeding** — relocate the existing hub:
+Codes are uppercased, 2–16 characters, letters digits `_` or `-`. Choose carefully:
+this string is permanent from the first weigh-in that carries it.
+
+### Retire one ("remove")
 
 ```bash
-npm run hub:relocate -- <lat> <lng> [radiusM] [hubCode]
+curl -X PATCH https://<api>/materials/PS -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"active": false}'
 ```
 
-Re-enrol the capture device afterwards: it stores the hub's coordinates and
-fence at enrolment so it can refuse an unusable fix before signing, and a stale
-copy would judge against the old location.
+This is what "removing" a material means here, and it is almost always what you
+want. The code disappears from the capture pickers within 15 minutes (sooner if a
+phone reconnects), and every stored weigh-in and sealed batch carrying it keeps
+verifying exactly as before. Reverse it with `{"active": true}`.
 
-Nothing else hardcodes a coordinate. The demo script and the browser suites read
-the hub from `GET /hubs` at startup, so they follow wherever it is. The fixed
-coordinates in `*/test/*` are unit-test fixtures and are meant to stay fixed.
+### Delete one outright
 
-A note on accuracy: desktop browsers have no GPS chip and fall back to IP-based
-location, typically accurate to hundreds of kilometres. The capture app refuses
-any fix whose error radius exceeds the hub's fence, since such a fix cannot place
-the collector inside it. Use a phone for a realistic fix.
+Only possible for a code nothing has ever used — a typo, in practice:
 
-### The demo follows the operator
+```bash
+curl -X DELETE https://<api>/materials/PTE -H "authorization: Bearer $TOKEN"
+```
 
-`npm run demo` resolves your approximate position from your public IP and, if the
-hub is further away than its geofence, moves the hub to you before capturing.
-Without that, running the demo anywhere other than the pilot site quarantines
-every weigh-in and reports only "0/12 passed integrity v1".
+If any event or batch carries the code, this returns **409** naming the counts and
+telling you to retire it instead. That refusal is the intended behaviour, not an
+obstacle to work around.
 
-Be clear about what this costs: once the hub sits where you are, the server's
-`geofence_ok` check passes by construction and proves nothing on that run. The
-demo prints a warning saying so. The tamper detection in step 3 is unaffected —
-it defeats a forged signature and an inflated weight, neither of which depends on
-location.
+### What the devices do
 
-| Variable | Effect |
-|---|---|
-| *(none)* | Resolve position from public IP, move the hub if needed |
-| `DEMO_LOCATION=hub` | Never move the hub — use it as seeded |
-| `DEMO_LAT`, `DEMO_LNG` | Use these coordinates instead of an IP lookup |
-| `DEMO_GEOIP_URL` | Point the lookup at a different service |
+The capture PWA and the Expo app fetch `GET /materials` and cache it, so:
 
-The lookup sends your IP to `ip-api.com`. Set `DEMO_LOCATION=hub` to avoid that
-call entirely. If the lookup fails for any reason the demo says so and carries on
-with the seeded hub, so an offline machine still runs.
+- The picker renders instantly from cache, offline, with no spinner.
+- A phone that has never reached the backend falls back to the six codes compiled
+  into `@proofchain/shared`, and labels the list "default list — not yet synced".
+- The cache is keyed by backend origin, so pointing a device at a different
+  instance discards it rather than offering codes that instance may not have.
+- Retiring the material a collector currently has selected moves their selection
+  to the first available one on the next refresh.
+
+A weigh-in signed against a since-retired code **still syncs**. That is
+deliberate: a phone can hold a queue signed hours ago, and rejecting it would
+destroy field work nobody can redo. Opening a *batch* with a retired code is
+refused, because that is a live decision rather than history.
+
+If you retire everything, the apps fall back to their built-in list rather than
+show an empty picker — check **Dashboard → Materials** if collectors report codes
+you thought you had removed.

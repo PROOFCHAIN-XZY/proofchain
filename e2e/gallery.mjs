@@ -17,12 +17,7 @@ const DASH = "http://localhost:3001";
 const CAPTURE = "http://localhost:3002";
 const BACKEND = process.env.BACKEND_URL ?? "http://localhost:3000";
 
-/**
- * Stand the simulated device at whatever hub the backend actually has. A fixed
- * coordinate here produces screenshots of a refused GPS fix as soon as the hub
- * is relocated, which looks like a broken app rather than a stale script.
- */
-async function hubLocation() {
+async function requireSeededHub() {
   const login = await fetch(`${BACKEND}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -39,7 +34,8 @@ async function hubLocation() {
   return hubs[0];
 }
 
-const hub = await hubLocation();
+// Precondition: the screenshots are meaningless against an unseeded backend.
+await requireSeededHub();
 
 const browser = await chromium.launch();
 
@@ -93,8 +89,6 @@ for (const scheme of ["light", "dark"]) {
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     colorScheme: scheme,
-    permissions: ["geolocation"],
-    geolocation: { latitude: hub.lat, longitude: hub.lng },
   });
   const page = await context.newPage();
   await page.goto(CAPTURE, { waitUntil: "networkidle" });
@@ -109,7 +103,6 @@ for (const scheme of ["light", "dark"]) {
   await page.waitForTimeout(2500);
 
   await page.fill("#weight", "18.250");
-  await page.click("#locate");
   await page.waitForTimeout(2000);
   await page.screenshot({ path: `${SHOTS}/${scheme}-5-capture.png`, fullPage: true });
   await context.close();

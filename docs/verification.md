@@ -366,7 +366,7 @@ The two must be identical. If they are, the image you are looking at is the one 
 
 **What this proves, and what it does not.** It proves the image is the one signed at capture. It does *not* prove the image depicts the material claimed, that it was taken at that moment, or that it was not itself staged. Photo *content* analysis is out of scope for this release; the check above is about provenance only.
 
-`photoAvailable: false` means the bytes were never uploaded — usually a phone that has not finished syncing over a poor link. The weigh-in is still valid: it is signed, geofenced and in the Merkle tree. Only this particular corroboration is missing, and the digest is still published, so an auditor who obtains the original photo by other means can verify it against the report.
+`photoAvailable: false` means the bytes were never uploaded — usually a phone that has not finished syncing over a poor link. The weigh-in is still valid: it is signed and in the Merkle tree. Only this particular corroboration is missing, and the digest is still published, so an auditor who obtains the original photo by other means can verify it against the report.
 
 ## Step 5: Check the Audit Report Endpoint
 

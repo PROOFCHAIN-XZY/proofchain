@@ -10,7 +10,11 @@ import {
   CollectionEventEntity,
 } from "../../src/database/entities";
 import { createTestDataSource, resetTables } from "./database";
-import { buildAnchorAttemptsService, stubLedgerVerification } from "../support/services";
+import {
+  buildAnchorAttemptsService,
+  buildMaterialsService,
+  stubLedgerVerification,
+} from "../support/services";
 import { at, insertEvent, seedFixtures, type Fixtures } from "./fixtures";
 
 /**
@@ -50,6 +54,9 @@ beforeEach(async () => {
     stubLedgerVerification(),
     // Not stubbed — the pending-anchor assertions depend on real attempt rows.
     buildAnchorAttemptsService(dataSource),
+    // Real too: opening a batch checks the catalogue, and these tests run
+    // against a migrated database where the seed materials exist.
+    buildMaterialsService(dataSource),
   );
 });
 

@@ -8,7 +8,11 @@ import {
 } from "../src/database/entities";
 import { createTestDatabase, type TestDatabase } from "./support/database";
 import { insertEvent, seedHub, type SeededHub } from "./support/fixtures";
-import { buildAnchorAttemptsService, stubLedgerVerification } from "./support/services";
+import {
+  buildAnchorAttemptsService,
+  buildMaterialsService,
+  stubLedgerVerification,
+} from "./support/services";
 import { STUCK_AFTER_FAILURES } from "../src/batches/anchor-backoff";
 
 /**
@@ -31,6 +35,7 @@ function buildService(database: TestDatabase): BatchesService {
     dataSource,
     stubLedgerVerification(),
     buildAnchorAttemptsService(dataSource),
+    buildMaterialsService(dataSource),
   );
 }
 
@@ -137,7 +142,7 @@ describe("BatchesService.addEvents — quarantine", () => {
       quarantined: true,
       integrity: {
         outcome: "fail",
-        findings: [{ check: "geofence_ok", outcome: "fail", detail: "1.2 km from hub" }],
+        findings: [{ check: "weight_in_range", outcome: "fail", detail: "1.2 km from hub" }],
       },
     });
 
@@ -167,8 +172,8 @@ describe("BatchesService.addEvents — hub and material boundaries", () => {
     const batch = await service.create(seeded.hub.id, "PET");
     const foreign = await insertEvent(db.dataSource, other);
 
-    // Hub membership is what ties a batch to a geofence and an operator; a
-    // cross-hub event would make the batch's provenance unstateable.
+    // Hub membership is what ties a batch to an operator; a cross-hub event
+    // would make the batch's provenance unstateable.
     await expect(service.addEvents(batch.id, [foreign.id])).rejects.toThrow(/not eligible/);
   });
 
@@ -707,6 +712,7 @@ describe("BatchesService.verifyEvent — ledger read-back", () => {
       db.dataSource,
       stubLedgerVerification(confirmation),
       buildAnchorAttemptsService(db.dataSource),
+      buildMaterialsService(db.dataSource),
     );
   }
 
@@ -779,6 +785,7 @@ describe("BatchesService.ledgerStatus", () => {
       db.dataSource,
       stubLedgerVerification(confirmation),
       buildAnchorAttemptsService(db.dataSource),
+      buildMaterialsService(db.dataSource),
     );
   }
 

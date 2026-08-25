@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { loadConfig } from "../config/configuration";
 
 /**
@@ -46,7 +46,13 @@ export class HorizonClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
 
-  constructor(baseUrl?: string, timeoutMs?: number) {
+  /**
+   * The overrides exist for tests, which point the client at a stub server.
+   * `@Optional()` is what stops Nest trying to *inject* a String and a Number
+   * for them at boot — without it the container fails to construct this
+   * provider at all, and the whole app fails to start.
+   */
+  constructor(@Optional() baseUrl?: string, @Optional() timeoutMs?: number) {
     const config = loadConfig();
     this.baseUrl = (baseUrl ?? config.stellarHorizonUrl).replace(/\/+$/, "");
     this.timeoutMs = timeoutMs ?? config.horizonTimeoutMs;

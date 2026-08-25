@@ -6,14 +6,12 @@ import { createMemoryStore, type KeyValueStore } from "../src/lib/storage";
 
 function payload(weightKg = 10): WeighInPayload {
   return {
-    schema: "proofchain.weighin.v1",
+    schema: "proofchain.weighin.v2",
     collectorId: "c1",
     hubId: "h1",
     deviceId: "d1",
     weightKg,
     material: "PET",
-    lat: -1.286389,
-    lng: 36.817223,
     capturedAt: "2026-08-08T10:00:00.000Z",
     photoHash: "a".repeat(64),
     nonce: "b".repeat(32),
@@ -130,7 +128,7 @@ describe("syncPending", () => {
           integrity: {
             outcome: "fail",
             findings: [
-              { check: "geofence", outcome: "fail", detail: "412 m from hub" },
+              { check: "weight_in_range", outcome: "fail", detail: "5000 kg above hub maximum" },
               { check: "weight_in_range", outcome: "pass" },
             ],
           },
@@ -140,8 +138,12 @@ describe("syncPending", () => {
     expect(outcome.rejected).toBe(1);
     const stored = (await queue.readAll(store))[0];
     expect(stored?.status).toBe("rejected");
-    // The collector needs the reason, not just the verdict.
-    expect(stored?.lastError).toBe("geofence: 412 m from hub");
+    // The collector needs a reason they can act on, not the name of a check:
+    // this string is rendered on the phone of the person who could still
+    // re-weigh the material. The raw finding stays on the server's event.
+    expect(stored?.lastError).toBe(
+      "The weight is outside what this hub accepts. Re-weigh the material and capture it again.",
+    );
   });
 
   it("treats a quarantined duplicate as already settled, not a fresh rejection", async () => {

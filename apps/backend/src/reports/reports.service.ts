@@ -35,8 +35,6 @@ export interface AuditReportEvent {
   collectorName: string;
   weightKg: number;
   material: string;
-  lat: number;
-  lng: number;
   capturedAt: string;
   receivedAt: string;
   photoHash: string;
@@ -68,8 +66,18 @@ export interface AuditReport {
     sealedAt: string | null;
     createdAt: string;
   };
-  hub: { id: string; code: string; name: string; lat: number; lng: number };
-  collectors: { id: string; name: string; kycLevel: string; eventCount: number; weightKg: number }[];
+  hub: {
+    id: string;
+    code: string;
+    name: string;
+  };
+  collectors: {
+    id: string;
+    name: string;
+    kycLevel: string;
+    eventCount: number;
+    weightKg: number;
+  }[];
   chainOfCustody: {
     id: string;
     fromParty: string;
@@ -183,9 +191,7 @@ export class ReportsService {
       : null;
 
     const collectorIds = [...new Set(events.map((e) => e.collectorId))];
-    const collectorRows = collectorIds.length
-      ? await this.collectors.findByIds(collectorIds)
-      : [];
+    const collectorRows = collectorIds.length ? await this.collectors.findByIds(collectorIds) : [];
     const collectorById = new Map(collectorRows.map((c) => [c.id, c]));
 
     const leaves = events.map((e) => hashLeaf(e.payloadHash));
@@ -199,8 +205,6 @@ export class ReportsService {
         collectorName: collectorById.get(e.collectorId)?.name ?? "(unknown)",
         weightKg: Number(e.weightKg),
         material: e.material,
-        lat: e.lat,
-        lng: e.lng,
         capturedAt: e.capturedAt.toISOString(),
         receivedAt: e.receivedAt.toISOString(),
         photoHash: e.photoHash,
@@ -218,9 +222,7 @@ export class ReportsService {
       recomputedRoot !== null &&
       reportEvents.every((e) => verifyMerkleProof(e.leaf, e.merkleProof, recomputedRoot));
 
-    const collectedKg = Number(
-      events.reduce((sum, e) => sum + Number(e.weightKg), 0).toFixed(3),
-    );
+    const collectedKg = Number(events.reduce((sum, e) => sum + Number(e.weightKg), 0).toFixed(3));
     const lastTransfer = transfers.at(-1) ?? null;
     const finalWeightOutKg = lastTransfer ? Number(lastTransfer.weightOutKg) : null;
     const gapKg =
@@ -253,7 +255,11 @@ export class ReportsService {
         sealedAt: batch.sealedAt?.toISOString() ?? null,
         createdAt: batch.createdAt.toISOString(),
       },
-      hub: { id: hub.id, code: hub.code, name: hub.name, lat: hub.lat, lng: hub.lng },
+      hub: {
+        id: hub.id,
+        code: hub.code,
+        name: hub.name,
+      },
       collectors: perCollector,
       chainOfCustody: transfers.map((t) => {
         const inKg = Number(t.weightInKg);
@@ -280,7 +286,9 @@ export class ReportsService {
         merkleRoot: batch.merkleRoot,
         recomputedRoot,
         rootMatchesSealedValue:
-          batch.merkleRoot !== null && recomputedRoot !== null && batch.merkleRoot === recomputedRoot,
+          batch.merkleRoot !== null &&
+          recomputedRoot !== null &&
+          batch.merkleRoot === recomputedRoot,
         allProofsValid,
         leafHashAlgorithm: "sha256(0x00 || payloadHash)",
         nodeHashAlgorithm: "sha256(0x01 || left || right)",
@@ -307,7 +315,7 @@ export class ReportsService {
       attestationNotes: [
         "The Stellar anchor proves these records existed unaltered at the anchored ledger time. It does not, by itself, prove the material weighed was real or additional.",
         "Source-level assurance comes from device signatures, hub geofencing, photo evidence and duplicate detection, recorded per event above.",
-      "Each event's photoHash was signed by the capture device. Where photoAvailable is true, the stored bytes have been checked to hash to that value; download the photo and recompute the sha256 to confirm it independently.",
+        "Each event's photoHash was signed by the capture device. Where photoAvailable is true, the stored bytes have been checked to hash to that value; download the photo and recompute the sha256 to confirm it independently.",
         "Baseline and additionality figures must be completed against the selected Verra Plastic Waste Reduction Standard track before submission.",
       ],
     };
@@ -325,8 +333,6 @@ export class ReportsService {
       "received_at",
       "material",
       "weight_kg",
-      "lat",
-      "lng",
       "photo_sha256",
       "photo_url",
       "payload_sha256",
@@ -343,8 +349,6 @@ export class ReportsService {
         e.receivedAt,
         e.material,
         e.weightKg.toFixed(3),
-        e.lat.toFixed(6),
-        e.lng.toFixed(6),
         e.photoHash,
         // Empty rather than absent so the column count stays fixed: a
         // spreadsheet with ragged rows silently misaligns every later field.

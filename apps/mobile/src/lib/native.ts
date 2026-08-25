@@ -1,6 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Crypto from "expo-crypto";
-import * as Location from "expo-location";
 import * as Network from "expo-network";
 import * as SecureStore from "expo-secure-store";
 import * as FileSystem from "expo-file-system";
@@ -39,34 +38,6 @@ export function randomNonce(): string {
 export async function isOnline(): Promise<boolean> {
   const state = await Network.getNetworkStateAsync();
   return Boolean(state.isConnected && state.isInternetReachable !== false);
-}
-
-export interface Fix {
-  lat: number;
-  lng: number;
-  accuracyM: number | null;
-}
-
-/**
- * A GPS fix, or an explicit failure.
- *
- * Capture must not fall back to a stale or invented position: the geofence check
- * is one of the few things standing between the platform and a fabricated tonne,
- * so a weigh-in with no fix is better refused than recorded at the wrong place.
- */
-export async function currentFix(): Promise<Fix> {
-  const { status } = await Location.requestForegroundPermissionsAsync();
-  if (status !== "granted") throw new Error("location permission denied");
-
-  const position = await Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.High,
-  });
-
-  return {
-    lat: position.coords.latitude,
-    lng: position.coords.longitude,
-    accuracyM: position.coords.accuracy ?? null,
-  };
 }
 
 /**

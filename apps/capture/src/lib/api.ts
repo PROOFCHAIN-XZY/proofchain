@@ -1,3 +1,4 @@
+import { describeFailures } from "@shared/integrity-copy";
 import * as queue from "./queue";
 import type { QueuedWeighIn } from "./queue";
 
@@ -118,7 +119,9 @@ export async function syncPending(): Promise<SyncOutcome> {
         serverEventId: response.eventId,
         syncedAt: new Date().toISOString(),
         photoUploadedAt: photoUploaded ? new Date().toISOString() : null,
-        lastError: photoUploaded ? null : "weigh-in synced; photo upload still pending",
+        lastError: photoUploaded
+          ? null
+          : "Weigh-in recorded. Its photo will finish uploading on the next connection.",
       });
       outcome.synced += 1;
       if (photoUploaded) outcome.photosUploaded += 1;
@@ -157,14 +160,20 @@ async function tryUploadPhoto(record: QueuedWeighIn, eventId: string): Promise<b
   }
 }
 
+/**
+ * What the collector is told about a rejection.
+ *
+ * Collector-facing copy, not check names: this string is rendered in the queue
+ * row on a phone held by the person who can still fix the problem, and
+ * `weight_in_range: 300 kg above hub maximum 200 kg` tells them nothing they can
+ * act on. The untranslated findings survive on the server's event record, where
+ * the dashboard shows them to operators.
+ */
 function failureSummary(response: IngestResponse): string {
-  return response.integrity.findings
-    .filter((f) => f.outcome === "fail")
-    .map((f) => `${f.check}${f.detail ? `: ${f.detail}` : ""}`)
-    .join("; ");
+  return describeFailures(response.integrity.findings);
 }
 
-async function postWeighIn(record: QueuedWeighIn): Promise<IngestResponse> {
+async function postWeighIn(record: queue.QueuedWeighIn): Promise<IngestResponse> {
   const controller = new AbortController();
   // A field link can hang open indefinitely; fail fast and retry later instead.
   const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -225,12 +234,49 @@ export function fetchCollectors(token: string): Promise<{ id: string; name: stri
   return authedGet("/collectors", token);
 }
 
-export function fetchHubs(
+/**
+ * The full hub list, for enrolment.
+ *
+ * `minWeightKg` / `maxWeightKg` come from `numeric` columns, which node-postgres
+ * hands back as strings; the backend's entity transformer narrows them, but this
+ * client does not get to assume that held. They are narrowed again here, at the
+ * boundary, because downstream they are compared against a scale reading and
+ * formatted into the copy a collector reads.
+ */
+export async function fetchHubs(
   token: string,
 ): Promise<
-  { id: string; code: string; name: string; lat: number; lng: number; geofenceRadiusM: number }[]
+  { id: string; code: string; name: string; minWeightKg: number; maxWeightKg: number }[]
 > {
-  return authedGet("/hubs", token);
+  const hubs = await authedGet<
+    { id: string; code: string; name: string; minWeightKg: string | number; maxWeightKg: string | number }[]
+  >("/hubs", token);
+
+  return hubs.map((h) => ({
+    id: h.id,
+    code: h.code,
+    name: h.name,
+    minWeightKg: Number(h.minWeightKg),
+    maxWeightKg: Number(h.maxWeightKg),
+  }));
+}
+
+/**
+ * The hub list, without any credential.
+ *
+ * An enrolled phone holds no operator token, so this is the only way it can
+ * learn about hubs added since it was paired — and re-pairing in the field means
+ * finding someone with an operator login. Public on the backend for the same
+ * reason the material catalogue is.
+ */
+export async function fetchHubDirectory(): Promise<
+  { id: string; code: string; name: string; minWeightKg: number; maxWeightKg: number }[]
+> {
+  const res = await fetch(`${backendUrl()}/hubs/directory`, {
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`hub directory failed: ${res.status}`);
+  return (await res.json()) as Awaited<ReturnType<typeof fetchHubDirectory>>;
 }
 
 export async function enrolDevice(

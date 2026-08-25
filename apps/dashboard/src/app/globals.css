@@ -32,24 +32,85 @@
   --measure: 78rem;
 }
 
+/*
+ * The dark values, named once.
+ *
+ * Two selectors can apply them — the system preference, and an explicit choice
+ * from the theme toggle — and a palette written out twice is a palette that
+ * drifts. Only the mapping is repeated below; the colours live here alone.
+ */
+:root {
+  --dark-paper: #101113;
+  --dark-surface: #17181b;
+  --dark-ink: #ecebe8;
+  --dark-ink-soft: #a4a8b0;
+  --dark-ink-faint: #757981;
+  --dark-rule: #2b2d31;
+  --dark-rule-strong: #ecebe8;
+
+  --dark-verified: #5fd1a3;
+  --dark-verified-bg: #12291f;
+  --dark-pending: #e0a951;
+  --dark-pending-bg: #2b2110;
+  --dark-broken: #f08a80;
+  --dark-broken-bg: #2e1614;
+  --dark-accent: #8fb0ff;
+}
+
+/*
+ * Three states, deliberately. No attribute means "follow the system", which is
+ * the default a reader never chose and should keep working. An explicit choice
+ * stamps [data-theme] and must win in both directions — including choosing dark
+ * on a machine set to light, which the media query alone cannot express.
+ *
+ * `color-scheme` is set alongside so native UI — scrollbars, the date control
+ * in the events filter, form fields — follows the theme too. Without it those
+ * stay light on a dark page and read as rendering bugs.
+ */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper: #101113;
-    --surface: #17181b;
-    --ink: #ecebe8;
-    --ink-soft: #a4a8b0;
-    --ink-faint: #757981;
-    --rule: #2b2d31;
-    --rule-strong: #ecebe8;
+    color-scheme: dark;
 
-    --verified: #5fd1a3;
-    --verified-bg: #12291f;
-    --pending: #e0a951;
-    --pending-bg: #2b2110;
-    --broken: #f08a80;
-    --broken-bg: #2e1614;
-    --accent: #8fb0ff;
+    --paper: var(--dark-paper);
+    --surface: var(--dark-surface);
+    --ink: var(--dark-ink);
+    --ink-soft: var(--dark-ink-soft);
+    --ink-faint: var(--dark-ink-faint);
+    --rule: var(--dark-rule);
+    --rule-strong: var(--dark-rule-strong);
+
+    --verified: var(--dark-verified);
+    --verified-bg: var(--dark-verified-bg);
+    --pending: var(--dark-pending);
+    --pending-bg: var(--dark-pending-bg);
+    --broken: var(--dark-broken);
+    --broken-bg: var(--dark-broken-bg);
+    --accent: var(--dark-accent);
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --paper: var(--dark-paper);
+  --surface: var(--dark-surface);
+  --ink: var(--dark-ink);
+  --ink-soft: var(--dark-ink-soft);
+  --ink-faint: var(--dark-ink-faint);
+  --rule: var(--dark-rule);
+  --rule-strong: var(--dark-rule-strong);
+
+  --verified: var(--dark-verified);
+  --verified-bg: var(--dark-verified-bg);
+  --pending: var(--dark-pending);
+  --pending-bg: var(--dark-pending-bg);
+  --broken: var(--dark-broken);
+  --broken-bg: var(--dark-broken-bg);
+  --accent: var(--dark-accent);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 *,
@@ -495,7 +556,25 @@ label {
 /* ---------- print: the audit artifact leaves as a PDF ---------- */
 
 @media print {
-  :root {
+  /*
+   * Selector list, not a bare `:root`, and deliberately so.
+   *
+   * Both dark rules outrank a plain `:root`: the explicit
+   * `:root[data-theme="dark"]` and the system-preference
+   * `:root:not([data-theme="light"])` are each (0,2,0) against (0,1,0). Without
+   * matching them here the audit report prints dark — the one document that
+   * leaves this system on paper and goes to a buyer — either because the reader
+   * chose dark or merely because their OS is set to it.
+   *
+   * These match that specificity exactly and win on source order, so this block
+   * MUST remain the last palette declaration in the file.
+   */
+  :root,
+  :root:not([data-theme="light"]),
+  :root[data-theme="dark"],
+  :root[data-theme="light"] {
+    color-scheme: light;
+
     --paper: #fff;
     --surface: #fff;
     --ink: #000;
@@ -545,4 +624,67 @@ label {
     color: var(--ink-faint);
     word-break: break-all;
   }
+}
+
+/* ---------- theme toggle ---------- */
+
+/*
+ * Groups the nav and the toggle as one right-hand cluster, so the topbar stays
+ * a two-part masthead (identity | controls) rather than three items spread
+ * across the full measure by space-between.
+ */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+/*
+ * Square, icon-only, and built on .btn so it inherits the border, focus ring
+ * and active nudge every other control already has.
+ */
+.theme-toggle {
+  padding: 0;
+  width: 40px;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.theme-toggle svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+/*
+ * Which icon shows is pure CSS, keyed off the same three-state logic as the
+ * palette. That matters for more than tidiness: a React-rendered icon would
+ * have to guess the theme during SSR, so it would either mismatch on hydration
+ * or flash the wrong glyph on first paint. CSS knows the answer before React
+ * runs, so it is right on the very first frame and never re-renders.
+ *
+ * The icon shows the destination, not the current state: a moon means "go
+ * dark". Pairing it with an explicit label below keeps that unambiguous.
+ */
+.theme-toggle .icon-sun {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-toggle .icon-sun {
+    display: block;
+  }
+
+  :root:not([data-theme="light"]) .theme-toggle .icon-moon {
+    display: none;
+  }
+}
+
+:root[data-theme="dark"] .theme-toggle .icon-sun {
+  display: block;
+}
+
+:root[data-theme="dark"] .theme-toggle .icon-moon {
+  display: none;
 }

@@ -29,6 +29,7 @@ import {
 } from "../ledger/ledger-verification.service";
 import { AnchorAttemptsService } from "./anchor-attempts.service";
 import { isDueForRetry, isStuck, nextAttemptAt } from "./anchor-backoff";
+import { MaterialsService } from "../materials/materials.service";
 
 /**
  * Batch lifecycle: open -> sealed -> processed -> sold.
@@ -108,6 +109,7 @@ export class BatchesService {
     private readonly dataSource: DataSource,
     private readonly ledger: LedgerVerificationService,
     private readonly attempts: AnchorAttemptsService,
+    private readonly materials: MaterialsService,
   ) {}
 
   /**
@@ -127,6 +129,12 @@ export class BatchesService {
   }
 
   async create(hubId: string, material: MaterialType): Promise<BatchEntity> {
+    // Stricter than ingest: a new batch must use a material that is still
+    // offered. An operator opening one is making a forward-looking choice with
+    // the live catalogue in front of them, so a retired code here is a mistake to
+    // block rather than history to preserve.
+    await this.materials.assertOpenable(material);
+
     const batch = this.batches.create({
       hubId,
       material,

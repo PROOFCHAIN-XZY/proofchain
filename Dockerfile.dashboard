@@ -1,0 +1,79 @@
+# ProofChain operator dashboard.
+#
+# Separate from the root Dockerfile because it ships a different thing. That one
+# builds the trust kernel — the backend and the anchor worker, which must agree
+# byte-for-byte on how a leaf is hashed — and deliberately carries no browser
+# toolchain. This builds a Next.js server. Sharing one image would mean every
+# backend deploy also rebuilt the frontend, and vice versa.
+#
+# The dashboard is proxied whole by Caddy rather than served as static files:
+# Next.js in server mode owns its own routing and streaming. See
+# infra/caddy/Caddyfile.
+
+ARG NODE_VERSION=20.19.4
+
+# ---------------------------------------------------------------------------
+# Dependencies — cached on the lockfile alone.
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS deps
+WORKDIR /app
+
+# Every workspace manifest: `npm ci` resolves the whole workspace graph up front
+# and fails on a missing member, even for workspaces nothing here builds.
+COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/backend/package.json apps/backend/
+COPY apps/capture/package.json apps/capture/
+COPY apps/dashboard/package.json apps/dashboard/
+COPY apps/mobile/package.json apps/mobile/
+COPY services/anchor-worker/package.json services/anchor-worker/
+
+RUN npm ci --fetch-retries=5 --fetch-retry-maxtimeout=60000
+
+# ---------------------------------------------------------------------------
+# Build — shared first: the dashboard imports it through its built .d.ts files,
+# so tsc cannot type-check the app until it exists.
+# ---------------------------------------------------------------------------
+FROM deps AS build
+WORKDIR /app
+
+COPY tsconfig.base.json ./
+COPY packages/shared packages/shared
+COPY apps/dashboard apps/dashboard
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN npm run build -w @proofchain/shared \
+    && npm run build -w @proofchain/dashboard
+
+RUN npm prune --omit=dev
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS runtime
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+
+COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/packages/shared/package.json ./packages/shared/
+COPY --from=build --chown=node:node /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build --chown=node:node /app/apps/dashboard/package.json ./apps/dashboard/
+COPY --from=build --chown=node:node /app/apps/dashboard/.next ./apps/dashboard/.next
+COPY --from=build --chown=node:node /app/apps/dashboard/next.config.mjs ./apps/dashboard/
+# No `public/` COPY: the dashboard has no static assets directory, and Docker
+# fails the build on a missing COPY source rather than skipping it. Add the line
+# back the moment apps/dashboard/public exists.
+
+USER node
+
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["npm", "run", "start", "-w", "@proofchain/dashboard"]

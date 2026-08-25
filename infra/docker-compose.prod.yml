@@ -1,0 +1,132 @@
+# ProofChain production stack.
+#
+# Overlay, not a replacement: this file adds the edge and the application
+# services that docker-compose.yml (Postgres + Redis, for local development)
+# deliberately leaves out. Run them together:
+#
+#   docker compose -f infra/docker-compose.yml \
+#                  -f infra/docker-compose.prod.yml up -d
+#
+# The one thing this stack exists to guarantee is that a collector's phone
+# reaches the capture app over TLS, on the same origin as its API. See
+# caddy/Caddyfile for why both halves of that sentence matter.
+
+name: proofchain
+
+services:
+  # -------------------------------------------------------------------------
+  # Edge: the only service with published ports.
+  # -------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Caddy needs the real hostnames to obtain certificates for them. There
+      # are no defaults on purpose: a placeholder here would silently request a
+      # certificate for someone else's domain and get rate-limited by Let's
+      # Encrypt for the trouble.
+      CAPTURE_HOST: ${CAPTURE_HOST:?set CAPTURE_HOST, e.g. collect.proofchain.example}
+      DASHBOARD_HOST: ${DASHBOARD_HOST:?set DASHBOARD_HOST, e.g. dashboard.proofchain.example}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL for certificate expiry notices}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The built capture PWA. Static files, so the edge serves them directly
+      # rather than proxying to a Node process that would only read from disk.
+      # Produce it with: npm run build -w @proofchain/capture
+      - ../apps/capture/dist:/srv/capture:ro
+      # Issued certificates and ACME account keys. Losing this volume means
+      # re-requesting every certificate on the next start, which Let's Encrypt
+      # rate-limits — treat it as state, not cache.
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # -------------------------------------------------------------------------
+  # API
+  # -------------------------------------------------------------------------
+  backend:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # No `ports:` — the API is reachable only through Caddy. Publishing 3000
+    # would reintroduce the plain-HTTP endpoint this stack exists to remove, and
+    # a phone that found it would work until the day it silently stopped.
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: ${DATABASE_URL:-postgres://proofchain:proofchain@postgres:5432/proofchain}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      # Exactly one proxy hop (Caddy) in front. Without this the backend cannot
+      # see the real client IP and rate-limits every collector as one client;
+      # with a value higher than the real hop count, a client could forge it.
+      TRUST_PROXY: "1"
+      # Same-origin means the browser sends no Origin header for these requests,
+      # but the dashboard's server-side calls and any preflight still need the
+      # allowlist to name the real hosts.
+      CORS_ORIGINS: https://${CAPTURE_HOST},https://${DASHBOARD_HOST}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------------
+  # Anchor worker — same image, different entrypoint.
+  # -------------------------------------------------------------------------
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["node", "services/anchor-worker/dist/index.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-postgres://proofchain:proofchain@postgres:5432/proofchain}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
+      STELLAR_SECRET: ${STELLAR_SECRET:?set STELLAR_SECRET for the anchoring account}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------------
+  # Operator dashboard
+  # -------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: ..
+      dockerfile: Dockerfile.dashboard
+    restart: unless-stopped
+    expose:
+      - "3001"
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      # Server-side calls stay inside the compose network and never traverse
+      # TLS; the browser-side base URL is same-origin via Caddy's /api.
+      BACKEND_URL: http://backend:3000
+      NEXT_PUBLIC_API_BASE_URL: /api
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  caddydata:
+  caddyconfig:

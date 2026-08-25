@@ -6,6 +6,8 @@ import type {
 } from "../../src/ledger/ledger-verification.service";
 import { AnchorAttemptsService } from "../../src/batches/anchor-attempts.service";
 import { ReportsService } from "../../src/reports/reports.service";
+import { MaterialsService } from "../../src/materials/materials.service";
+import { RegistryService } from "../../src/collectors/registry.service";
 import {
   AnchorAttemptEntity,
   AnchorRecordEntity,
@@ -15,6 +17,7 @@ import {
   DeviceEntity,
   HubEntity,
   BatchEntity,
+  MaterialEntity,
 } from "../../src/database/entities";
 
 /**
@@ -38,6 +41,33 @@ export function stubRequiredEnv(overrides: Record<string, string> = {}): void {
   }
 }
 
+/**
+ * The real catalogue service, not a stub.
+ *
+ * The test database is seeded with the same six codes a migrated database has,
+ * so this behaves as it does in production: known codes pass, invented ones are
+ * refused. Stubbing it would make every suite that ingests a weigh-in silently
+ * stop exercising the material check.
+ */
+export function buildMaterialsService(dataSource: DataSource): MaterialsService {
+  stubRequiredEnv();
+  return new MaterialsService(
+    dataSource.getRepository(MaterialEntity),
+    dataSource.getRepository(CollectionEventEntity),
+    dataSource.getRepository(BatchEntity),
+  );
+}
+
+/** Collectors, devices and hubs — the registry a capture device is told about. */
+export function buildRegistryService(dataSource: DataSource): RegistryService {
+  stubRequiredEnv();
+  return new RegistryService(
+    dataSource.getRepository(CollectorEntity),
+    dataSource.getRepository(DeviceEntity),
+    dataSource.getRepository(HubEntity),
+  );
+}
+
 export function buildEventsService(dataSource: DataSource): EventsService {
   stubRequiredEnv();
   return new EventsService(
@@ -45,6 +75,7 @@ export function buildEventsService(dataSource: DataSource): EventsService {
     dataSource.getRepository(DeviceEntity),
     dataSource.getRepository(CollectorEntity),
     dataSource.getRepository(HubEntity),
+    buildMaterialsService(dataSource),
   );
 }
 

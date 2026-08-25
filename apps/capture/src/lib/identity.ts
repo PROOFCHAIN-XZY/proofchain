@@ -80,3 +80,22 @@ export function randomNonce(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return toHex(bytes);
 }
+
+/**
+ * A v4 UUID that works on an insecure origin.
+ *
+ * `crypto.randomUUID` is gated behind a secure context, so on a phone reaching
+ * this app over a plain http:// LAN address it is simply `undefined` — and the
+ * queue-record id is generated at the moment a weigh-in is signed, meaning the
+ * whole capture threw right at the end. `crypto.getRandomValues` has no such
+ * gate, so the fallback below is exactly as random; only the API is different.
+ */
+export function randomId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant 10xx
+  const hex = toHex(bytes);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
