@@ -35,9 +35,6 @@ export async function seedFixtures(dataSource: DataSource): Promise<Fixtures> {
     hubs.create({
       code: "NRB-01",
       name: "Nairobi Pilot Hub",
-      lat: -1.2921,
-      lng: 36.8219,
-      geofenceRadiusM: 300,
       minWeightKg: 0.1,
       maxWeightKg: 500,
     }),
@@ -49,9 +46,6 @@ export async function seedFixtures(dataSource: DataSource): Promise<Fixtures> {
     hubs.create({
       code: "MSA-01",
       name: "Mombasa Hub",
-      lat: -4.0435,
-      lng: 39.6682,
-      geofenceRadiusM: 300,
       minWeightKg: 0.1,
       maxWeightKg: 500,
     }),
@@ -63,8 +57,6 @@ export async function seedFixtures(dataSource: DataSource): Promise<Fixtures> {
       phone: "+254700000001",
       cooperativeId: null,
       kycLevel: "basic",
-      homeLat: null,
-      homeLng: null,
       active: true,
     }),
   );
@@ -117,8 +109,6 @@ export async function insertEvent(
       batchId: options.batchId ?? null,
       weightKg: options.weightKg ?? 12.5,
       material: options.material ?? "PET",
-      lat: -1.2921,
-      lng: 36.8219,
       capturedAt: options.capturedAt,
       receivedAt: options.capturedAt,
       photoHash: createHash("sha256").update(`photo-${payloadHash}`).digest("hex"),
@@ -129,9 +119,9 @@ export async function insertEvent(
       integrity: options.quarantined
         ? {
             outcome: "fail",
-            findings: [{ check: "geofence_ok", outcome: "fail", detail: "1200 m from hub" }],
+            findings: [{ check: "weight_in_range", outcome: "fail", detail: "weight out of range" }],
           }
-        : { outcome: "pass", findings: [{ check: "geofence_ok", outcome: "pass" }] },
+        : { outcome: "pass", findings: [{ check: "weight_in_range", outcome: "pass" }] },
       quarantined: options.quarantined ?? false,
     }),
   );

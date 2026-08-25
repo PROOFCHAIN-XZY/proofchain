@@ -32,14 +32,11 @@ async function hubLocation() {
 }
 
 const hub = await hubLocation();
-console.log(`  (hub ${hub.code} at ${hub.lat}, ${hub.lng}, fence ${hub.geofenceRadiusM} m)`);
+console.log(`  (hub ${hub.code})`);
 
 const browser = await chromium.launch();
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 }, // a real field phone
-  permissions: ["geolocation"],
-  // Standing at the hub, so the fix is inside the geofence.
-  geolocation: { latitude: hub.lat, longitude: hub.lng },
 });
 const page = await context.newPage();
 page.on("console", (m) => {
@@ -115,25 +112,11 @@ await page.waitForTimeout(800);
 const refusal = await page.locator("body").innerText();
 check("states what is still missing", /still needed/i.test(refusal));
 check(
-  "names the missing GPS fix and photo",
-  /gps/i.test(refusal) && /photo/i.test(refusal),
+  "names the missing photo",
+  /photo/i.test(refusal),
   refusal.split("\n").find((l) => /still needed/i.test(l))?.slice(0, 70) ?? "",
 );
 await page.screenshot({ path: `${SHOTS}/13-capture-incomplete.png`, fullPage: true });
-
-// ---------------------------------------------------------------- 6. gps
-console.log("\n[6] GPS fix is captured from the device");
-await page.click("#locate");
-await page.waitForTimeout(2500);
-const located = await page.locator("body").innerText();
-{
-  // The displayed fix must match the hub we are standing at, whichever it is.
-  const shown = located.match(/-?\d+\.\d+, -?\d+\.\d+/)?.[0] ?? "";
-  const [shownLat, shownLng] = shown.split(",").map((n) => Number(n.trim()));
-  const close =
-    Math.abs(shownLat - hub.lat) < 0.001 && Math.abs(shownLng - hub.lng) < 0.001;
-  check("shows the coordinates of the hub we are standing at", close, shown || "(none)");
-}
 
 // ---------------------------------------------------------------- 7. queue empty
 console.log("\n[7] Queue starts empty and is stated honestly");

@@ -1,11 +1,10 @@
-# Serving ProofChain so the GPS works
+# Serving ProofChain so the camera and offline queue work
 
-Everything in this directory exists because of one browser rule: **geolocation,
-the camera and service workers require a secure context** — HTTPS, or
-`localhost`. A phone opening the capture app at `http://192.168.1.20:3002` is an
-insecure origin, and the browser reports `PERMISSION_DENIED` from the GPS no
-matter what the phone's location settings say. Nothing in the application code
-can lift that.
+Everything in this directory exists because of one browser rule: **the camera and
+service workers require a secure context** — HTTPS, or `localhost`. A phone
+opening the capture app at `http://192.168.1.20:3002` is an insecure origin, so
+the camera is refused and the service worker never registers, which takes the
+offline queue with it. Nothing in the application code can lift that.
 
 There are three ways to serve this, for three different situations. Pick by what
 you are actually doing.
@@ -18,8 +17,8 @@ you are actually doing.
 npm run dev:capture          # http://localhost:3002
 ```
 
-`localhost` is already a secure context, so GPS works with no certificates at
-all. This is why HTTPS is opt-in rather than the default.
+`localhost` is already a secure context, so the camera and service worker work
+with no certificates at all. This is why HTTPS is opt-in rather than the default.
 
 ---
 
@@ -37,7 +36,7 @@ Then **in the app, set Backend URL to `https://<your-lan-ip>:3002/api`** — not
 That second step is the one everybody misses. Serving the page over HTTPS creates
 a new problem behind the first: a secure page may not `fetch()` a plain-HTTP
 endpoint, so pointing at the backend directly is blocked as mixed content. The
-GPS starts working and every request fails instead. `apps/capture/vite.config.ts`
+camera starts working and every request fails instead. `apps/capture/vite.config.ts`
 runs a dev proxy at `/api` so the phone talks to exactly one origin over TLS and
 Vite forwards to the backend server-side, where scheme mixing is nobody's
 business.
@@ -82,8 +81,8 @@ What the stack does:
 - **Caddy** terminates TLS, obtains and renews certificates automatically, and
   is the only service with published ports.
 - **Capture** is served as static files with its API at `/api` on the *same
-  origin* — no mixed content, no CORS, and a real secure context, so the GPS
-  works.
+  origin* — no mixed content, no CORS, and a real secure context, so the camera
+  and service worker work.
 - **The dashboard** is proxied whole, because Next.js in server mode owns its own
   routing and streaming.
 - **The backend has no published port.** Exposing `3000` would reintroduce the
@@ -105,15 +104,13 @@ thing with the same caveat.
 
 ## What this does *not* fix
 
-HTTPS makes GPS **possible**, not **reliable**. Under a tin roof, in a shed, in
-an urban canyon, a fix takes 30–90 seconds or never arrives. That is physics, not
-configuration.
+HTTPS makes the camera and the service worker **possible**, not the network
+**reliable**. A field link drops, and a phone can spend a whole shift with no
+signal at all.
 
-The capture app handles that separately: a weigh-in can be signed and queued with
-no position at all, held as a draft, and signed automatically when a fix arrives
-within 30 minutes of the capture. See `FIX_ATTACH_WINDOW_MS` in
-`apps/capture/src/lib/queue.ts` for why the window is bounded — attaching a
-position measured hours later would be manufacturing evidence.
+The capture app handles that separately: every weigh-in is signed on the spot and
+queued in IndexedDB, then synced whenever a connection appears. See
+`apps/capture/src/lib/queue.ts`.
 
-So: **HTTPS is the fix. The deferred-fix queue is the fix for when GPS fails
-anyway.** They are not alternatives.
+So: **HTTPS is the fix for the secure context. The offline queue is the fix for
+no signal.** They are not alternatives.

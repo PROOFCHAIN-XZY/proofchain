@@ -197,29 +197,6 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
                 {report.hub.name} ({report.hub.code})
               </td>
             </tr>
-            {report.hub.locality ? (
-              <tr>
-                <th>Location</th>
-                {/*
-                  Labelled as a lookup, not as a verified fact — the coordinate
-                  below is what the geofence and the proof actually rest on, and
-                  a reader should not mistake a place name for evidence.
-                */}
-                <td>
-                  {report.hub.locality}{" "}
-                  <span className="note">
-                    (reverse-geocoded from the coordinate
-                    {report.hub.localityAttribution ? " · OpenStreetMap, ODbL" : ""})
-                  </span>
-                </td>
-              </tr>
-            ) : null}
-            <tr>
-              <th>Coordinates</th>
-              <td className="hash">
-                {report.hub.lat.toFixed(6)}, {report.hub.lng.toFixed(6)}
-              </td>
-            </tr>
             <tr>
               <th>Batch id</th>
               <td className="hash">{report.batch.id}</td>
@@ -350,7 +327,6 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
               <th>Captured (UTC)</th>
               <th>Collector</th>
               <th className="num">Weight</th>
-              <th>Location</th>
               <th>Photo</th>
               <th>Photo sha256</th>
               <th>Merkle leaf</th>
@@ -364,9 +340,6 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
                 <td className="hash">{e.capturedAt}</td>
                 <td>{e.collectorName}</td>
                 <td className="num">{formatKg(e.weightKg)} kg</td>
-                <td className="hash">
-                  {e.lat.toFixed(6)}, {e.lng.toFixed(6)}
-                </td>
                 <td>
                   {/*
                     The photo is the only part of a weigh-in a human can judge

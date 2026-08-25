@@ -327,7 +327,6 @@ export default async function BatchPage({
               <tr>
                 <th>Captured</th>
                 <th className="num">Weight</th>
-                <th>Location</th>
                 <th>Integrity</th>
                 <th>Payload hash</th>
                 <th>Verify</th>
@@ -338,9 +337,6 @@ export default async function BatchPage({
                 <tr key={e.id}>
                   <td className="hash">{formatDateTime(e.capturedAt)}</td>
                   <td className="num">{formatKg(e.weightKg)} kg</td>
-                  <td className="hash">
-                    {e.lat.toFixed(5)}, {e.lng.toFixed(5)}
-                  </td>
                   <td>
                     <span
                       className="pill"

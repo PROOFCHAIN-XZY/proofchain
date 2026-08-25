@@ -26,8 +26,8 @@
  * A missing asset must surface as an error, never as a fallback document.
  */
 
-// Bumping this name purges the poisoned caches left by the previous strategy.
-const CACHE = "proofchain-capture-v2";
+// Bumped to v3 to evict shells still holding the previous capture UI.
+const CACHE = "proofchain-capture-v3";
 const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {

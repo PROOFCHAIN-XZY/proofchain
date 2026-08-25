@@ -92,8 +92,6 @@ export interface CollectionEvent {
   batchId: string | null;
   weightKg: string | number;
   material: string;
-  lat: number;
-  lng: number;
   capturedAt: string;
   receivedAt: string;
   photoHash: string;
@@ -122,12 +120,7 @@ export interface AuditReport {
     id: string;
     code: string;
     name: string;
-    lat: number;
-    lng: number;
     /** OSM-derived place name; descriptive only, never part of the proof. */
-    locality: string | null;
-    localityAttribution: string | null;
-    localityResolvedAt: string | null;
   };
   collectors: {
     id: string;
@@ -184,8 +177,6 @@ export interface AuditReport {
     collectorName: string;
     weightKg: number;
     material: string;
-    lat: number;
-    lng: number;
     capturedAt: string;
     photoHash: string;
     photoAvailable: boolean;

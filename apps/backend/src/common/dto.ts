@@ -6,8 +6,6 @@ import {
   IsEmail,
   IsIn,
   IsISO8601,
-  IsLatitude,
-  IsLongitude,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -86,8 +84,8 @@ const QueryBoolean = (): PropertyDecorator =>
   });
 
 export class WeighInPayloadDto {
-  @IsIn(["proofchain.weighin.v1"])
-  schema: "proofchain.weighin.v1";
+  @IsIn(["proofchain.weighin.v2"])
+  schema: "proofchain.weighin.v2";
 
   @IsUUID()
   collectorId: string;
@@ -105,12 +103,6 @@ export class WeighInPayloadDto {
 
   @MaterialCode()
   material: MaterialType;
-
-  @IsLatitude()
-  lat: number;
-
-  @IsLongitude()
-  lng: number;
 
   @IsISO8601({ strict: true })
   capturedAt: string;
@@ -144,9 +136,6 @@ export class CreateCollectorDto {
   @IsOptional() @IsString() @MaxLength(100) cooperativeId?: string;
 
   @IsOptional() @IsIn(["none", "basic", "verified"]) kycLevel?: "none" | "basic" | "verified";
-
-  @IsOptional() @IsLatitude() homeLat?: number;
-  @IsOptional() @IsLongitude() homeLng?: number;
 }
 
 export class EnrolDeviceDto {
@@ -163,10 +152,6 @@ export class EnrolDeviceDto {
 export class CreateHubDto {
   @IsString() @IsNotEmpty() @MaxLength(50) code: string;
   @IsString() @IsNotEmpty() @MaxLength(200) name: string;
-  @IsLatitude() lat: number;
-  @IsLongitude() lng: number;
-
-  @IsOptional() @IsNumber() @Min(10) @Max(20_000) geofenceRadiusM?: number;
   @IsOptional() @IsNumber() @Min(0) minWeightKg?: number;
   @IsOptional() @IsNumber() @Min(0) maxWeightKg?: number;
 }

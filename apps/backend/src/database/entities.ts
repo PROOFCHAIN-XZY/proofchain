@@ -37,7 +37,7 @@ const numericTransformer = {
     value === null || value === undefined ? null : Number(value),
 };
 
-/** A physical collection hub, with the geofence events must fall inside. */
+/** A physical collection hub. */
 @Entity("hubs")
 export class HubEntity {
   @PrimaryGeneratedColumn("uuid")
@@ -49,46 +49,16 @@ export class HubEntity {
   @Column()
   name: string;
 
-  @Column("double precision")
-  lat: number;
-
-  @Column("double precision")
-  lng: number;
-
-  @Column("int", { default: 250 })
-  geofenceRadiusM: number;
-
-  /**
-   * Human place name for this coordinate, e.g. "Kaduna, Nigeria".
-   *
-   * Descriptive only — it exists so an audit report reads as somewhere real
-   * rather than as a pair of decimals. Nothing derives from it: the geofence
-   * uses lat/lng, and the signed payload and Merkle leaf never see it, so a
-   * wrong or missing label cannot affect whether a weigh-in is accepted or a
-   * batch verifies. Nullable because the geocoder is allowed to be down, and
-   * because hubs enrolled before this column existed have no label.
-   */
-  @Column({ type: "varchar", length: 200, nullable: true })
-  locality: string | null;
-
-  /**
-   * When the label was resolved, and the source's attribution.
-   *
-   * Kept because the label is a third-party claim about the world at a point in
-   * time, and a report that shows it should be able to say where it came from —
-   * ODbL requires the credit, and a reader deserves to know the name is OSM's
-   * as of a date, not our own assertion.
-   */
-  @Column({ type: "timestamptz", nullable: true })
-  localityResolvedAt: Date | null;
-
-  @Column({ type: "varchar", length: 300, nullable: true })
-  localityAttribution: string | null;
-
   @Column("numeric", { precision: 10, scale: 3, default: 0.1, transformer: numericTransformer })
   minWeightKg: number;
 
-  @Column("numeric", { precision: 10, scale: 3, default: 500, transformer: numericTransformer })
+  /**
+   * Ten tonnes: a hub weighs aggregated loads, not what one person carries.
+   * The old 500 kg ceiling assumed a single collector at a hand scale and
+   * quarantined perfectly real deliveries once a hub started weighing a
+   * truckload in one go.
+   */
+  @Column("numeric", { precision: 10, scale: 3, default: 10000, transformer: numericTransformer })
   maxWeightKg: number;
 
   @CreateDateColumn({ type: "timestamptz" })
@@ -113,12 +83,6 @@ export class CollectorEntity {
 
   @Column({ type: "varchar", default: "none" })
   kycLevel: KycLevel;
-
-  @Column("double precision", { nullable: true })
-  homeLat: number | null;
-
-  @Column("double precision", { nullable: true })
-  homeLng: number | null;
 
   @Column({ default: true })
   active: boolean;
@@ -255,12 +219,6 @@ export class CollectionEventEntity {
 
   @Column({ type: "varchar" })
   material: MaterialType;
-
-  @Column("double precision")
-  lat: number;
-
-  @Column("double precision")
-  lng: number;
 
   /** Device clock at capture. */
   @Column("timestamptz")

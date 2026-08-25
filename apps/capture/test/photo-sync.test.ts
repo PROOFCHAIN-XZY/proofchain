@@ -31,7 +31,7 @@ function record(overrides: Partial<QueuedWeighIn> = {}): QueuedWeighIn {
   return {
     id: "queued-1",
     payload: {
-      schema: "proofchain.weighin.v1",
+      schema: "proofchain.weighin.v2",
       lat: 6.5244,
       lng: 3.3792,
     } as QueuedWeighIn["payload"],

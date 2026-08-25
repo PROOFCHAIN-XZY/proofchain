@@ -8,14 +8,12 @@ import {
 import type { WeighInPayload } from "../src/types.js";
 
 const payload: WeighInPayload = {
-  schema: "proofchain.weighin.v1",
+  schema: "proofchain.weighin.v2",
   collectorId: "9f1c5d2e-0000-4000-8000-000000000001",
   hubId: "hub-nairobi-01",
   deviceId: "device-abc",
   weightKg: 12.5,
   material: "PET",
-  lat: -1.286389,
-  lng: 36.817223,
   capturedAt: "2026-08-08T09:15:00.000Z",
   photoHash: "a".repeat(64),
   nonce: "b".repeat(32),
@@ -45,13 +43,6 @@ describe("device signatures", () => {
     const sig = signWeighIn(payload, kp.privateKey);
     const inflated = { ...payload, weightKg: 125.0 };
     expect(verifyWeighInSignature(inflated, sig, kp.publicKey)).toBe(false);
-  });
-
-  it("rejects a payload whose GPS was moved after signing", () => {
-    const kp = generateDeviceKeypair();
-    const sig = signWeighIn(payload, kp.privateKey);
-    const moved = { ...payload, lat: 0, lng: 0 };
-    expect(verifyWeighInSignature(moved, sig, kp.publicKey)).toBe(false);
   });
 
   it("survives key round-tripping through the base64 form stored in Postgres", () => {

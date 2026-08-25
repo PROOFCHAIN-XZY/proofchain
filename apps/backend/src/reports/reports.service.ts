@@ -35,8 +35,6 @@ export interface AuditReportEvent {
   collectorName: string;
   weightKg: number;
   material: string;
-  lat: number;
-  lng: number;
   capturedAt: string;
   receivedAt: string;
   photoHash: string;
@@ -68,23 +66,10 @@ export interface AuditReport {
     sealedAt: string | null;
     createdAt: string;
   };
-  /**
-   * Descriptive context for the collection site.
-   *
-   * `locality` and its attribution are third-party (OpenStreetMap) labels for
-   * the coordinate, present so the report reads as somewhere real. They are not
-   * part of the proof: nothing signed or hashed contains them, and a verifier
-   * recomputing the root uses lat/lng alone.
-   */
   hub: {
     id: string;
     code: string;
     name: string;
-    lat: number;
-    lng: number;
-    locality: string | null;
-    localityAttribution: string | null;
-    localityResolvedAt: string | null;
   };
   collectors: {
     id: string;
@@ -220,8 +205,6 @@ export class ReportsService {
         collectorName: collectorById.get(e.collectorId)?.name ?? "(unknown)",
         weightKg: Number(e.weightKg),
         material: e.material,
-        lat: e.lat,
-        lng: e.lng,
         capturedAt: e.capturedAt.toISOString(),
         receivedAt: e.receivedAt.toISOString(),
         photoHash: e.photoHash,
@@ -276,11 +259,6 @@ export class ReportsService {
         id: hub.id,
         code: hub.code,
         name: hub.name,
-        lat: hub.lat,
-        lng: hub.lng,
-        locality: hub.locality ?? null,
-        localityAttribution: hub.localityAttribution ?? null,
-        localityResolvedAt: hub.localityResolvedAt?.toISOString() ?? null,
       },
       collectors: perCollector,
       chainOfCustody: transfers.map((t) => {
@@ -355,8 +333,6 @@ export class ReportsService {
       "received_at",
       "material",
       "weight_kg",
-      "lat",
-      "lng",
       "photo_sha256",
       "photo_url",
       "payload_sha256",
@@ -373,8 +349,6 @@ export class ReportsService {
         e.receivedAt,
         e.material,
         e.weightKg.toFixed(3),
-        e.lat.toFixed(6),
-        e.lng.toFixed(6),
         e.photoHash,
         // Empty rather than absent so the column count stays fixed: a
         // spreadsheet with ragged rows silently misaligns every later field.

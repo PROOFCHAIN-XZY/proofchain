@@ -5,11 +5,11 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 /**
  * HTTPS is opt-in via `HTTPS=1`.
  *
- * Geolocation, the camera and service workers are all gated behind a *secure
- * context*: HTTPS, or localhost. Testing this app the way it is actually used —
- * on a phone, over the office wifi, at `http://192.168.x.x:3002` — is therefore
- * an insecure origin, where the browser reports GPS as "permission denied" no
- * matter what the phone's settings say.
+ * The camera and service workers are both gated behind a *secure context*:
+ * HTTPS, or localhost. Testing this app the way it is actually used — on a
+ * phone, over the office wifi, at `http://192.168.x.x:3002` — is therefore an
+ * insecure origin, where the camera is refused and the service worker never
+ * registers, taking the offline queue with it.
  *
  * Turning it on serves a self-signed certificate, so the phone shows a warning
  * once. That is the trade for a real secure context on a real device.
@@ -25,7 +25,7 @@ const useHttps = process.env.HTTPS === "1";
  * Serving the app over HTTPS creates a second problem behind the first: a secure
  * page may not `fetch()` a plain-http endpoint, so pointing the app's Backend URL
  * at `http://192.168.x.x:3000` — the obvious move, and what the runbook used to
- * say — is blocked as mixed content. The GPS works and every request fails.
+ * say — is blocked as mixed content. The camera works and every request fails.
  *
  * Proxying here means the phone talks to exactly one origin, over TLS, and Vite
  * forwards to the backend server-side where scheme mixing is nobody's business.
@@ -59,6 +59,9 @@ export default defineConfig({
       // Source, not dist, for the same reason as the others: one implementation
       // of the code shape and label rules across device and server.
       "@shared/materials": resolve(__dirname, "../../packages/shared/src/materials.ts"),
+      // The one wording of a failed integrity check that a collector ever sees,
+      // shared so the two capture apps cannot drift apart on it.
+      "@shared/integrity-copy": resolve(__dirname, "../../packages/shared/src/integrity-copy.ts"),
     },
   },
   build: { target: "es2022", sourcemap: true },

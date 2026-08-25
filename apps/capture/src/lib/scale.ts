@@ -9,7 +9,7 @@
  *   - It does not treat a scale reading as trusted. A Bluetooth reading is a
  *     convenience over typing; a tampered scale produces a tampered number
  *     either way. Source-level assurance comes from the enrolled-device
- *     signature, geofence and photo, not from the transport.
+ *     signature and photo, not from the transport.
  *   - It does not block capture. If pairing fails or the browser lacks Web
  *     Bluetooth, manual entry stays available — a hub cannot stop working
  *     because a phone will not pair.

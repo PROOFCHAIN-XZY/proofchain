@@ -53,7 +53,7 @@ export class EventsService {
    * They simply can never enter a batch.
    */
   async ingest(payload: WeighInPayload, signature: string): Promise<IngestResult> {
-    if (payload.schema !== "proofchain.weighin.v1") {
+    if (payload.schema !== "proofchain.weighin.v2") {
       throw new BadRequestException(`unsupported payload schema: ${payload.schema}`);
     }
 
@@ -87,9 +87,6 @@ export class EventsService {
       hub: hub
         ? {
             id: hub.id,
-            lat: hub.lat,
-            lng: hub.lng,
-            geofenceRadiusM: hub.geofenceRadiusM,
             minWeightKg: Number(hub.minWeightKg),
             maxWeightKg: Number(hub.maxWeightKg),
           }
@@ -127,8 +124,6 @@ export class EventsService {
       batchId: null,
       weightKg: payload.weightKg,
       material: payload.material,
-      lat: payload.lat,
-      lng: payload.lng,
       capturedAt: new Date(payload.capturedAt),
       receivedAt: now,
       photoHash: payload.photoHash,

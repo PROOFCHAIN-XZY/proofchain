@@ -57,8 +57,6 @@ function encode(value: unknown): string {
 
 /** Grams. Weight is quantised so float noise cannot invalidate a signature. */
 export const WEIGHT_DECIMALS = 3;
-/** ~0.11 m at the equator — finer precision than any consumer GPS delivers. */
-export const COORD_DECIMALS = 6;
 
 function quantise(n: number, decimals: number): number {
   if (!Number.isFinite(n)) {
@@ -80,8 +78,6 @@ export function canonicalEventPayload(p: WeighInPayload): string {
     deviceId: p.deviceId,
     weightKg: quantise(p.weightKg, WEIGHT_DECIMALS),
     material: p.material,
-    lat: quantise(p.lat, COORD_DECIMALS),
-    lng: quantise(p.lng, COORD_DECIMALS),
     capturedAt: p.capturedAt,
     photoHash: p.photoHash,
     nonce: p.nonce,

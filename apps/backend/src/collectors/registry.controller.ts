@@ -44,13 +44,13 @@ export class RegistryController {
 
   /**
    * Public for the same reason the material catalogue is: a capture device holds
-   * no credentials, and it cannot warn a collector that a fix falls outside a
-   * geofence without knowing where the hubs are. Declared before nothing else
-   * matches "hubs/..." so ordering is not a concern here.
+   * no credentials, and it cannot name the hub it is capturing for without
+   * knowing which hubs exist. Declared before nothing else matches "hubs/..."
+   * so ordering is not a concern here.
    */
   @Public()
   @Get("hubs/directory")
-  @ApiOperation({ summary: "Hub coordinates and geofences, for capture devices" })
+  @ApiOperation({ summary: "Hub identities, for capture devices" })
   hubDirectory() {
     return this.registry.hubDirectory();
   }

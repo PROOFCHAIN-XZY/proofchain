@@ -1,107 +1,75 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createTestDatabase, type TestDatabase } from "./support/database";
-import { stubRequiredEnv } from "./support/services";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { RegistryService } from "../src/collectors/registry.service";
-import type { NominatimClient } from "../src/collectors/nominatim.client";
-import { CollectorEntity, DeviceEntity, HubEntity } from "../src/database/entities";
+import { HubEntity } from "../src/database/entities";
+import { createTestDatabase, type TestDatabase } from "./support/database";
+import { buildRegistryService } from "./support/services";
 
 /**
- * The hub directory is the one registry read a capture device may make without
- * credentials, so what it exposes is a deliberate decision rather than an
- * accident of returning the entity.
+ * The hub directory is the only configuration an unauthenticated field phone
+ * ever reads, and what it contains decides whether a collector finds out about
+ * a hub's weight ceiling while the material is still on the scale or hours
+ * later, as a rejected row.
  */
 
 let db: TestDatabase;
-
-function buildRegistry(): RegistryService {
-  stubRequiredEnv();
-  const geocoder = {
-    enabled: false,
-    reverseGeocode: async () => ({
-      ok: false as const,
-      reason: "disabled" as const,
-      detail: "off in tests",
-    }),
-  } as unknown as NominatimClient;
-
-  return new RegistryService(
-    db.dataSource.getRepository(CollectorEntity),
-    db.dataSource.getRepository(DeviceEntity),
-    db.dataSource.getRepository(HubEntity),
-    geocoder,
-  );
-}
-
-beforeAll(async () => {
-  db = await createTestDatabase();
-});
+let service: RegistryService;
 
 beforeEach(async () => {
+  db ??= await createTestDatabase();
   await db.reset();
+  service = buildRegistryService(db.dataSource);
 });
 
 afterAll(async () => {
-  await db.close();
+  await db?.close();
 });
 
-describe("hubDirectory", () => {
-  it("returns what a device needs to judge a fix", async () => {
-    const registry = buildRegistry();
-    await registry.createHub({
-      code: "LAG-01",
-      name: "Lagos Hub",
-      lat: 6.524379,
-      lng: 3.379206,
-      geofenceRadiusM: 500,
-    });
+async function seed(overrides: Partial<HubEntity> = {}): Promise<HubEntity> {
+  return db.dataSource.getRepository(HubEntity).save({
+    code: "NBO-01",
+    name: "Nairobi Pilot Hub",
+    minWeightKg: 0.5,
+    maxWeightKg: 10_000,
+    ...overrides,
+  } as HubEntity);
+}
 
-    const [hub] = await registry.hubDirectory();
+describe("RegistryService.hubDirectory", () => {
+  it("publishes the weight bounds a device needs to pre-check a weigh-in", async () => {
+    await seed();
 
-    expect(hub).toEqual({
-      id: expect.any(String),
-      code: "LAG-01",
-      name: "Lagos Hub",
-      lat: 6.524379,
-      lng: 3.379206,
-      geofenceRadiusM: 500,
-    });
-  });
+    const [entry] = await service.hubDirectory();
 
-  it("withholds operational configuration from an unauthenticated caller", async () => {
-    const registry = buildRegistry();
-    await registry.createHub({
+    expect(entry).toMatchObject({
       code: "NBO-01",
-      name: "Nairobi Pilot Hub",
-      lat: -1.286389,
-      lng: 36.817223,
       minWeightKg: 0.5,
-      maxWeightKg: 200,
+      maxWeightKg: 10_000,
     });
-
-    const [hub] = await registry.hubDirectory();
-
-    // Coordinates and fences are already on every enrolled phone and printed in
-    // audit reports. The weight bounds are not, and an attacker who knows them
-    // knows exactly what weight passes the range check unremarked.
-    expect(hub).not.toHaveProperty("minWeightKg");
-    expect(hub).not.toHaveProperty("maxWeightKg");
-    expect(hub).not.toHaveProperty("createdAt");
   });
 
-  it("orders by code so the picker is stable between refreshes", async () => {
-    const registry = buildRegistry();
-    for (const code of ["POR-01", "ABU-01", "KAN-01"]) {
-      await registry.createHub({ code, name: `${code} Hub`, lat: 9, lng: 7 });
-    }
+  it("gives them as numbers, not the strings a numeric column serialises to", async () => {
+    // The device compares these against a scale reading and formats them into
+    // the copy a collector reads; a string would survive typechecking and fail
+    // only in the field.
+    await seed();
 
-    expect((await registry.hubDirectory()).map((h) => h.code)).toEqual([
-      "ABU-01",
-      "KAN-01",
-      "POR-01",
+    const [entry] = await service.hubDirectory();
+
+    expect(typeof entry?.minWeightKg).toBe("number");
+    expect(typeof entry?.maxWeightKg).toBe("number");
+  });
+
+  it("still withholds everything a capture device has no business reading", async () => {
+    await seed();
+
+    const [entry] = await service.hubDirectory();
+
+    expect(Object.keys(entry ?? {}).sort()).toEqual([
+      "code",
+      "id",
+      "maxWeightKg",
+      "minWeightKg",
+      "name",
     ]);
-  });
-
-  it("is empty rather than failing when no hubs exist", async () => {
-    expect(await buildRegistry().hubDirectory()).toEqual([]);
   });
 });

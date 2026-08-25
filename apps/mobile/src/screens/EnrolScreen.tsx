@@ -36,7 +36,9 @@ export function EnrolScreen({ identity, onEnrolled }: Props) {
   const [busy, setBusy] = useState(false);
 
   const [collectors, setCollectors] = useState<{ id: string; name: string }[]>([]);
-  const [hubs, setHubs] = useState<{ id: string; code: string; name: string; lat: number; lng: number }[]>([]);
+  const [hubs, setHubs] = useState<
+    { id: string; code: string; name: string; minWeightKg: number; maxWeightKg: number }[]
+  >([]);
   const [token, setToken] = useState<string | null>(null);
   const [collectorId, setCollectorId] = useState<string | null>(null);
   const [hubId, setHubId] = useState<string | null>(null);
@@ -87,8 +89,10 @@ export function EnrolScreen({ identity, onEnrolled }: Props) {
         collectorName: collector?.name ?? "collector",
         hubId,
         hubName: hub.name,
-        hubLat: hub.lat,
-        hubLng: hub.lng,
+        // Recorded now because this is the only moment the phone holds an
+        // operator token; capture itself has no credential to fetch them with.
+        minWeightKg: hub.minWeightKg,
+        maxWeightKg: hub.maxWeightKg,
       };
 
       await saveDeviceMeta(secureStore, meta);

@@ -391,10 +391,9 @@ select {
 }
 
 /*
- * Per-sensor status, sitting directly under the readout it belongs to. A GPS
- * failure and a photo failure are separate conditions with separate remedies, so
- * they get separate lines rather than taking turns in the single notice slot at
- * the top of the screen.
+ * Sensor status, sitting directly under the readout it belongs to. A camera
+ * failure has its own remedy, so it gets its own line rather than taking turns
+ * in the single notice slot at the top of the screen.
  */
 .slot-note {
   font-family: var(--mono);
@@ -450,15 +449,6 @@ select {
   color: var(--bad);
 }
 
-/*
- * A held weigh-in is captured and safe but not yet sendable. It reads as its own
- * state rather than as an error: nothing has gone wrong, and the collector's next
- * action ("take a fix") is different from the one a rejection calls for.
- */
-.tally[data-kind="awaiting-gps"] b {
-  color: var(--warn);
-}
-
 ul.records {
   list-style: none;
   margin: 0;
@@ -485,11 +475,6 @@ ul.records li::before {
   background: var(--ink-soft);
 }
 
-ul.records li[data-status="awaiting-gps"]::before {
-  background: var(--warn);
-  /* Hollow, not filled: captured but not yet committed to the wire. */
-  box-shadow: inset 0 0 0 2px var(--bone);
-}
 ul.records li[data-status="queued"]::before {
   background: var(--warn);
 }
@@ -547,4 +532,87 @@ ul.records li[data-status="rejected"]::before {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+}
+
+/* ---------- workstation layout ---------- */
+
+/*
+ * Above ~62rem this is no longer a phone in a gloved hand — it is a hub
+ * supervisor's desktop, where a 34rem column stranded mid-monitor reads as a
+ * broken page rather than a deliberate one.
+ *
+ * The capture form and the queue are the two things a supervisor watches
+ * together, so they become columns rather than a scroll: sign a weigh-in on the
+ * left, watch it land on the right without either leaving the viewport. The
+ * split is 1.05/0.95 rather than even, because the form is where the work
+ * happens and the ledger is where it is confirmed.
+ *
+ * Nothing about the phone layout changes. Touch targets, numerals and rule
+ * weights are untouched; this only spends horizontal room a phone never has.
+ */
+@media (min-width: 62rem) {
+  body {
+    padding: clamp(1.5rem, 1rem + 2.5vw, 3.5rem) var(--space);
+  }
+
+  #app {
+    max-width: 76rem;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(21rem, 0.95fr);
+    grid-template-areas:
+      "masthead masthead"
+      "capture  queue";
+    /* Same hard-offset language as .action, scaled to the shell: the panel sits
+       on the bone rather than floating above it. */
+    border: 1px solid var(--rule);
+    box-shadow: 6px 6px 0 var(--rule);
+  }
+
+  /* Sticky is a small-screen affordance: the masthead is always in view here. */
+  .masthead {
+    grid-area: masthead;
+    position: static;
+  }
+
+  main {
+    grid-area: capture;
+    padding: calc(var(--space) * 1.5);
+    /* The column rule replaces the queue's horizontal border — same 3px weight,
+       so the two panels stay as firmly separated as they are when stacked. */
+    border-right: 3px solid var(--rule);
+  }
+
+  .queue {
+    grid-area: queue;
+    border-top: 0;
+    padding: calc(var(--space) * 1.5);
+    /* Sunk, per the token's contract: present, but not where the work happens. */
+    background: var(--bone-sunk);
+    align-content: start;
+    gap: 1rem;
+  }
+
+  /* There is room for the ledger to breathe, but it must not drive the page
+     height — the form column is the one that sets it. */
+  ul.records {
+    max-height: none;
+  }
+}
+
+/*
+ * The ledger panel's anchor. Without it the tallies float at the top of a large
+ * empty surface on desktop and read as leftover chrome rather than as a titled
+ * panel; on a phone it names the section that follows the commit button.
+ */
+.panel-title {
+  font-family: var(--mono);
+  font-size: var(--label);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  font-weight: 400;
+  margin: 0 0 0.25rem;
+  padding-bottom: 0.625rem;
+  border-bottom: 1px solid var(--rule-soft);
 }

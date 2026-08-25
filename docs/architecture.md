@@ -17,7 +17,6 @@ The schema is designed backwards from the audit artifact. Every table exists bec
 #### 1. Hubs (collection_points)
 
 Physical locations where waste is collected. A hub defines:
-- A geofence (latitude, longitude, radius in meters)
 - Weight bounds per weigh-in (minimum, maximum in kg)
 
 ```sql
@@ -25,16 +24,13 @@ CREATE TABLE hubs (
   id uuid PRIMARY KEY,
   code varchar UNIQUE,           -- Short identifier (e.g., "nairobi-pilot")
   name varchar,                  -- "Nairobi Pilot Hub"
-  lat double precision,          -- -1.286389
-  lng double precision,          -- 36.817223
-  geofenceRadiusM int DEFAULT 250,
   minWeightKg numeric(10,3) DEFAULT 0.1,
-  maxWeightKg numeric(10,3) DEFAULT 500,
+  maxWeightKg numeric(10,3) DEFAULT 10000,
   createdAt timestamptz
 );
 ```
 
-**Why it matters:** Collectors must report from within the hub's geofence. Out-of-area weigh-ins indicate either GPS spoofing or collection from an unapproved location.
+**Why it matters:** A batch is scoped to one hub, so hub membership is what makes a batch's provenance stateable.
 
 #### 2. Collectors (waste_collection_workers)
 
@@ -264,7 +260,7 @@ Integrity checks run at ingest on every weigh-in. They are deliberately **pure**
 
 Any *fail* quarantines the event; it can never enter a batch. A *warn* is logged but doesn't block (e.g., offline sync).
 
-### The 7 Checks
+### The 6 Checks
 
 #### 1. Device Enrolled (`device_enrolled`)
 
@@ -288,31 +284,23 @@ Any *fail* quarantines the event; it can never enter a batch. A *warn* is logged
 
 **Note:** Canonical payload is defined in `packages/shared/src/canonical-core.ts`. All signers (mobile app, PWA, external integrations) must use the same encoding (deterministic JSON, field order) so signatures are verifiable.
 
-#### 3. Geofence OK (`geofence_ok`)
+#### 3. Weight in Range (`weight_in_range`)
 
-**Defends against:** Collecting plastic from outside the hub's service area (implies either GPS spoofing or unauthorized collection).
-
-- The weigh-in's latitude and longitude must be valid coordinates
-- The hub must exist
-- The event's location must be within the hub's geofence (great-circle distance ≤ radius)
-
-**Outcome:** *fail* if coordinates are invalid, hub is unknown, or distance exceeds the geofence radius.
-
-**Tolerance:** The `hubs.geofence_radius_m` column defaults to 250 m; the seeded Nairobi Pilot Hub sets 300 m explicitly, and each hub is expected to be tuned to its own site. The radius has to absorb ordinary GPS jitter (±10 m in the open, far worse between buildings or under a roof) while still catching a weigh-in claimed from the wrong part of town. Set it too tight and honest collectors get quarantined; too loose and the check stops meaning anything.
-
-#### 4. Weight in Range (`weight_in_range`)
-
-**Defends against:** Claiming an implausible weight (e.g., 950 kg for a single weigh-in when the hub's max is 500 kg).
+**Defends against:** Claiming an implausible weight (e.g., 40 tonnes for a single weigh-in when the hub's max is 10 tonnes).
 
 - Weight must be positive
 - Weight must be ≥ hub's minimum (default 0.1 kg, avoids scale noise)
-- Weight must be ≤ hub's maximum (default 500 kg, a single collector can't carry more)
+- Weight must be ≤ hub's maximum (default 10,000 kg — one delivery to one hub, not one truckload of many)
 
 **Outcome:** *fail* if weight is invalid, below minimum, or above maximum.
 
 **Note:** These bounds are per-weigh-in, not per-batch. A batch can accumulate multiple weigh-ins up to any weight.
 
-#### 5. Not a Duplicate (`not_duplicate`)
+**The ceiling was 500 kg until the HubWeightCeiling migration.** That figure assumed a weigh-in was what one collector carries to a hand scale, and it quarantined real aggregated deliveries. The migration raises both the column default and every existing hub below 10 t; hubs an operator set higher are left alone. Events quarantined under the old ceiling are not revived — a stored integrity verdict describes checks as they ran, and rewriting one would make the audit trail lie.
+
+**Capture devices hold these bounds too.** `GET /hubs/directory` publishes them, both capture apps check a weight against them before signing, and the server checks again at ingest. The client check is a courtesy to the collector, not a security control: it turns a rejection that arrives hours later, with the material gone, into a correction they can still make. The server's check is the one that decides.
+
+#### 4. Not a Duplicate (`not_duplicate`)
 
 **Defends against:** Replaying an identical signed weigh-in to create credit out of thin air.
 
@@ -325,7 +313,7 @@ Any *fail* quarantines the event; it can never enter a batch. A *warn* is logged
 
 **Why it works:** The nonce is random and unique per weigh-in. The payload includes the nonce. An attacker who replays the same payload (with the same nonce, weight, location, timestamp) will hash to the same payload hash and be detected. An attacker who changes the nonce must re-sign (they don't have the private key).
 
-#### 6. Clock Plausible (`clock_plausible`)
+#### 5. Clock Plausible (`clock_plausible`)
 
 **Defends against:** Backdated or future-dated weigh-ins (indicates either device clock drift or an attempt to forge a timestamp).
 
@@ -340,7 +328,7 @@ Any *fail* quarantines the event; it can never enter a batch. A *warn* is logged
 
 **Tolerance:** ±15 seconds accommodates NTP clock skew and network latency without being so loose that an old backdated event looks fresh.
 
-#### 7. Photo Present (`photo_present`)
+#### 6. Photo Present (`photo_present`)
 
 **Defends against:** Missing or invalid photo hash (indicates metadata tampering or a misconfigured device).
 
@@ -363,9 +351,9 @@ Each event's integrity verdict is stored as a JSONB object:
       "outcome": "pass"
     },
     {
-      "check": "geofence_ok",
+      "check": "weight_in_range",
       "outcome": "fail",
-      "detail": "1250 m from hub (fence 250 m)"
+      "detail": "40000 kg above hub maximum 10000 kg"
     },
     ...
   ]
@@ -455,7 +443,7 @@ const tx = new TransactionBuilder(account, {
 ### 1. Timestamp-Only Integrity
 
 Integrity v1 does not verify photo content, material type, or weight calibration. It only checks:
-- Metadata plausibility (signature, enrollment, geofence, weight bounds, timestamp)
+- Metadata plausibility (signature, enrollment, weight bounds, timestamp)
 - Absence of known tampering (no replay, valid hash format)
 
 A rogue device with a calibrated scale can report any weight it chooses (within the hub's range). Photo hashing protects against tampering post-capture, but the photo itself is not analyzed.

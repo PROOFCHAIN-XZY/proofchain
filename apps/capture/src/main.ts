@@ -20,30 +20,24 @@ import {
   setBackendUrl,
   syncPending,
 } from "./lib/api";
-import {
-  getFix,
-  INSECURE_CONTEXT_MESSAGE,
-  isSecureContextAvailable,
-  type Fix,
-} from "./lib/location";
 import { connectScale, isSupported as scaleSupported, type ScaleConnection } from "./lib/scale";
-import { assessFix } from "./lib/fix-assessment";
 import {
-  fenceLabel,
+  boundsForHub,
   hubChoices,
   hubLabel,
   mergeHubSnapshot,
   selectHub,
   type HubOption,
 } from "./lib/hubs";
+import { formatKg, weightProblem } from "@shared/integrity-copy";
 
 /**
  * ProofChain field capture.
  *
- * One screen, one job: turn a physical weigh-in into a signed, geo-tagged,
- * photographed record that survives having no signal. Everything else — batching,
- * anchoring, reporting — happens elsewhere. The collector's only obligations are
- * weight, material, location and photo.
+ * One screen, one job: turn a physical weigh-in into a signed, photographed
+ * record that survives having no signal. Everything else — batching, anchoring,
+ * reporting — happens elsewhere. The collector's only obligations are weight,
+ * material and photo.
  */
 
 interface Provisioning {
@@ -52,11 +46,6 @@ interface Provisioning {
   deviceId: string;
   collectorName: string;
   hubName: string;
-  // Kept on the device so the collector learns a fix is unusable *before*
-  // signing, instead of discovering it as a server-side quarantine hours later.
-  hubLat: number;
-  hubLng: number;
-  geofenceRadiusM: number;
   /**
    * Every hub this device may switch to, captured at enrolment.
    *
@@ -78,19 +67,16 @@ let provisioning: Provisioning | null = readProvisioning();
 // retire PET, and defaulting to a retired code would have every collector who
 // does not notice the picker sign an unusable material all day.
 let material: MaterialType = pickableMaterials()[0].code;
-let fix: Fix | null = null;
 let photo: Blob | null = null;
 let photoHash: string | null = null;
 let scale: ScaleConnection | null = null;
 let notice: { tone: "good" | "bad" | "warn"; text: string } | null = null;
 
 /**
- * GPS and photo are two independent sensors behind two independent permissions,
- * and either can fail while the other works perfectly. So each gets its own
- * status here rather than sharing the one-line `notice`: a camera that cannot be
- * read must not erase the message explaining a denied location, a refused fix
- * must not blank a photo already taken, and neither may leave the other's button
- * disabled. Nothing in this section is allowed to throw past its own handler.
+ * The camera is a sensor behind its own permission and can fail on its own, so
+ * it gets a dedicated status rather than sharing the one-line `notice`: a photo
+ * that cannot be read must not erase an unrelated message, and must not leave
+ * its own button disabled. Nothing in this section may throw past its handler.
  */
 interface EvidenceSlot {
   busy: boolean;
@@ -100,7 +86,6 @@ interface EvidenceSlot {
 
 const idleSlot = (): EvidenceSlot => ({ busy: false, message: null, tone: null });
 
-let gpsSlot: EvidenceSlot = idleSlot();
 let photoSlot: EvidenceSlot = idleSlot();
 
 function readProvisioning(): Provisioning | null {
@@ -284,12 +269,10 @@ function releasePhotoPreview(): void {
  * The evidence field, in one place so the initial render and the in-place
  * repaints below cannot drift apart.
  *
- * The two halves are addressable separately on purpose. Everything that changes
- * when a fix arrives lives under a `gps-` id and everything that changes when a
- * photo arrives lives under a `photo-` id, so a repaint of one provably cannot
- * touch a node belonging to the other. The file input sits outside both: it is
- * the handle an open camera dialog will return to, and replacing it mid-capture
- * would drop the photo the collector just took.
+ * Everything that changes when a photo arrives lives under a `photo-` id, so a
+ * repaint provably cannot touch a node outside it. The file input sits outside:
+ * it is the handle an open camera dialog will return to, and replacing it
+ * mid-capture would drop the photo the collector just took.
  */
 function evidenceFieldHtml(): string {
   return `
@@ -298,14 +281,11 @@ function evidenceFieldHtml(): string {
         <div class="evidence">
           <div id="photo-thumb">${photoThumbHtml()}</div>
           <div class="meta">
-            <span><strong>GPS</strong> <span id="gps-readout">${escapeHtml(gpsReadout())}</span></span>
-            ${slotNoteHtml("gps-note", gpsSlot)}
             <span><strong>Photo</strong> <span id="photo-readout">${escapeHtml(photoReadout())}</span></span>
             ${slotNoteHtml("photo-note", photoSlot)}
           </div>
         </div>
         <div class="row">
-          <button class="ghost" id="locate" ${gpsSlot.busy ? "disabled" : ""}>${escapeHtml(locateLabel())}</button>
           <button class="ghost" id="shoot" ${photoSlot.busy ? "disabled" : ""}>${escapeHtml(shootLabel())}</button>
         </div>
         <input id="camera" type="file" accept="image/*" capture="environment" class="visually-hidden" />
@@ -319,12 +299,6 @@ function photoThumbHtml(): string {
     : `<div class="empty">no<br />photo</div>`;
 }
 
-function gpsReadout(): string {
-  if (gpsSlot.busy) return "locating…";
-  if (!fix) return "not captured";
-  return `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)} ±${fix.accuracyM} m`;
-}
-
 function photoReadout(): string {
   if (photoSlot.busy) return "reading…";
   // Keyed on the hash, not on the blob: a photo whose bytes could not be hashed
@@ -332,11 +306,6 @@ function photoReadout(): string {
   // is about to refuse.
   if (!photoHash) return "not captured";
   return `${photoHash.slice(0, 16)}…`;
-}
-
-function locateLabel(): string {
-  if (gpsSlot.busy) return "Locating…";
-  return fix ? "Refresh GPS" : "Get GPS fix";
 }
 
 function shootLabel(): string {
@@ -352,16 +321,15 @@ function slotNoteHtml(id: string, slot: EvidenceSlot): string {
 }
 
 /**
- * Repaint one half of the evidence field in place.
+ * Repaint the evidence field in place.
  *
  * A full `render()` would work, but it rebuilds the entire screen — including the
- * file input an open camera dialog is holding, and including the other sensor's
- * nodes. Patching the four nodes that actually changed keeps the two captures
- * genuinely independent and keeps a half-typed weight and an open dialog alive.
- * Every lookup is null-tolerant: a repaint that races a screen change is a no-op,
+ * file input an open camera dialog is holding. Patching only the nodes that
+ * actually changed keeps a half-typed weight and an open dialog alive. Every
+ * lookup is null-tolerant: a repaint that races a screen change is a no-op,
  * never a throw.
  */
-function paintEvidence(which: "gps" | "photo"): void {
+function paintEvidence(): void {
   const set = (id: string, text: string) => {
     const node = document.getElementById(id);
     if (node) node.textContent = text;
@@ -379,13 +347,6 @@ function paintEvidence(which: "gps" | "photo"): void {
     node.textContent = label;
     node.disabled = busy;
   };
-
-  if (which === "gps") {
-    set("gps-readout", gpsReadout());
-    note("gps-note", gpsSlot);
-    button("locate", locateLabel(), gpsSlot.busy);
-    return;
-  }
 
   const thumb = document.getElementById("photo-thumb");
   if (thumb) thumb.innerHTML = photoThumbHtml();
@@ -440,34 +401,6 @@ function masthead(): string {
     </header>`;
 }
 
-/**
- * Shown for as long as the page is served insecurely. Unlike `notice`, this is
- * not dismissible by retrying: every weigh-in captured here will fail its GPS
- * step, so the blocker belongs on screen permanently rather than appearing only
- * after the collector has already tried.
- *
- * It says different things on the two screens because it means different things.
- * On the capture screen GPS is a hard requirement and this is a blocker, so it is
- * a red `alert`. On the pairing screen nothing at all depends on location —
- * sign-in and enrolment are plain HTTP calls — so a red blocker there reads as
- * "you cannot sign in", which is false and has people abandoning a working setup.
- * It stays, because an operator deserves to know before enrolling a phone that
- * the deployment cannot capture, but as an advisory that names what still works.
- */
-function insecureBannerHtml(scope: "capture" | "pairing" = "capture"): string {
-  if (isSecureContextAvailable()) return "";
-
-  if (scope === "pairing") {
-    return `<p class="notice" data-tone="warn" role="status">${escapeHtml(
-      "Sign-in and enrolment work normally here. Note for later: this page is not " +
-        "served over HTTPS, so GPS will be blocked when capturing — reach this phone " +
-        "over HTTPS before a shift starts.",
-    )}</p>`;
-  }
-
-  return `<p class="notice" data-tone="bad" role="alert">${escapeHtml(INSECURE_CONTEXT_MESSAGE)}</p>`;
-}
-
 function noticeHtml(): string {
   if (!notice) return "";
   return `<p class="notice" data-tone="${notice.tone}" role="status">${escapeHtml(notice.text)}</p>`;
@@ -477,7 +410,6 @@ function provisionScreen(): string {
   return `
     ${masthead()}
     <main>
-      ${insecureBannerHtml("pairing")}
       <div class="field">
         <span class="label">Step 1 · Pair this phone</span>
         <p style="margin:0;font-size:0.9375rem">
@@ -528,6 +460,29 @@ function provisionScreen(): string {
     </main>`;
 }
 
+/**
+ * What this hub accepts for a single weigh-in.
+ *
+ * Shown before the weight is typed rather than after it is refused, so the limit
+ * is a thing the collector plans around — split the load, weigh it in two —
+ * instead of a thing they discover by losing a weigh-in to it. Rendered only
+ * when the device actually knows the bounds; a phone whose snapshot predates
+ * them says nothing rather than inventing a figure.
+ */
+function rangeHint(p: Provisioning): string {
+  const { minKg, maxKg } = boundsForHub(hubChoices(p.hubs, p), p.hubId);
+  if (minKg === null && maxKg === null) return "";
+
+  const range =
+    minKg !== null && maxKg !== null
+      ? `${formatKg(minKg)}–${formatKg(maxKg)} kg`
+      : minKg !== null
+        ? `${formatKg(minKg)} kg or more`
+        : `up to ${formatKg(maxKg as number)} kg`;
+
+  return `<p class="hint">This hub accepts ${range} per weigh-in.</p>`;
+}
+
 async function captureScreen(): Promise<string> {
   const p = provisioning!;
   const tallies = await queue.counts();
@@ -536,7 +491,6 @@ async function captureScreen(): Promise<string> {
   return `
     ${masthead()}
     <main>
-      ${insecureBannerHtml()}
       <div class="field">
         <span class="label">
           <span>Collector</span>
@@ -547,7 +501,6 @@ async function captureScreen(): Promise<string> {
       <div class="field">
         <label class="label" for="active-hub">
           <span>Hub</span>
-          <span>${escapeHtml(fenceLabel(p.geofenceRadiusM))}</span>
         </label>
         <select id="active-hub">
           ${hubChoices(p.hubs, p)
@@ -579,6 +532,7 @@ async function captureScreen(): Promise<string> {
           />
           <span class="unit">kilograms</span>
         </div>
+        ${rangeHint(p)}
         ${
           scaleSupported()
             ? `<button class="ghost" id="pair">${scale ? "Disconnect scale" : "Pair Bluetooth scale"}</button>`
@@ -635,13 +589,9 @@ async function captureScreen(): Promise<string> {
       <button class="action" id="commit">Sign &amp; queue weigh-in</button>
     </main>
 
-    <section class="queue" aria-label="Capture queue">
+    <section class="queue" aria-labelledby="queue-title">
+      <h2 class="panel-title" id="queue-title">Capture queue</h2>
       <div class="tallies">
-        ${
-          tallies["awaiting-gps"] > 0
-            ? `<span class="tally" data-kind="awaiting-gps"><b>${tallies["awaiting-gps"]}</b>held</span>`
-            : ""
-        }
         <span class="tally" data-kind="queued"><b>${tallies.queued + tallies.syncing}</b>waiting</span>
         <span class="tally" data-kind="synced"><b>${tallies.synced}</b>synced</span>
         <span class="tally" data-kind="rejected"><b>${tallies.rejected}</b>rejected</span>
@@ -659,13 +609,7 @@ async function captureScreen(): Promise<string> {
           <li data-status="${r.status}">
             <span class="record-weight">${r.payload.weightKg.toFixed(3)} kg</span>
             <span class="meta">${escapeHtml(materialLabel(r.payload.material, cachedCatalogue()))} · ${new Date(r.createdAt).toLocaleTimeString()}</span>
-            ${
-              r.lastError
-                ? `<span class="record-note">${escapeHtml(r.lastError)}</span>`
-                : r.status === "awaiting-gps"
-                  ? `<span class="record-note">held — waiting for a position, take a GPS fix to send it</span>`
-                  : ""
-            }
+            ${r.lastError ? `<span class="record-note">${escapeHtml(r.lastError)}</span>` : ""}
           </li>`,
                 )
                 .join("")
@@ -737,9 +681,6 @@ function wireProvision(): void {
         deviceId,
         collectorName: collectorSelect.selectedOptions[0]?.textContent ?? "Collector",
         hubName: hubSelect.selectedOptions[0]?.textContent ?? "Hub",
-        hubLat: hub.lat,
-        hubLng: hub.lng,
-        geofenceRadiusM: hub.geofenceRadiusM,
         // Snapshot every hub while an operator token is still in hand: this is
         // the only moment the device can see the list, and it is what lets a
         // collector move between sites later without signal or a login.
@@ -747,9 +688,8 @@ function wireProvision(): void {
           id: h.id,
           code: h.code,
           name: h.name,
-          lat: h.lat,
-          lng: h.lng,
-          geofenceRadiusM: h.geofenceRadiusM,
+          minWeightKg: h.minWeightKg,
+          maxWeightKg: h.maxWeightKg,
         })),
       });
 
@@ -779,16 +719,7 @@ function wireCapture(): void {
 
     saveProvisioning({ ...p, ...assignment });
 
-    // The fix on screen was judged against the previous hub's fence, so it is
-    // now an answer to a question nobody asked. Dropping it forces a fresh
-    // locate rather than letting a collector sign a Lagos weigh-in against a
-    // reading that was assessed in Nairobi.
-    fix = null;
-    gpsSlot = idleSlot();
-    notice = {
-      tone: "good",
-      text: `Capturing at ${assignment.hubName}. Take a new fix for this hub.`,
-    };
+    notice = { tone: "good", text: `Capturing at ${assignment.hubName}.` };
     void render();
   });
 
@@ -806,56 +737,6 @@ function wireCapture(): void {
     });
   }
 
-  on("locate", "click", async () => {
-    // Guarded rather than merely disabled: the button is one way in, but a
-    // double-tap that lands before the repaint must not start a second fix.
-    if (gpsSlot.busy) return;
-    gpsSlot = { busy: true, message: null, tone: null };
-    paintEvidence("gps");
-
-    try {
-      const candidate = await getFix();
-      const assessment = assessFix(candidate, provisioning);
-
-      if (assessment.usable) {
-        fix = candidate;
-        gpsSlot = {
-          busy: false,
-          message: assessment.message ?? null,
-          tone: assessment.message ? "warn" : null,
-        };
-
-        // Anything captured while the GPS was still unanswered can now be signed.
-        const settled = await settleDrafts(candidate);
-        if (settled.located > 0 || settled.expired > 0) {
-          notice = {
-            tone: settled.expired > 0 ? "warn" : "good",
-            text: settled.expired
-              ? `Signed ${settled.located} held weigh-in(s); ${settled.expired} were captured too long ago to locate.`
-              : `Signed and queued ${settled.located} held weigh-in(s).`,
-          };
-          await render();
-          if (settled.located > 0) void runSync();
-        }
-      } else {
-        // Refused, not merely flagged: an unusable fix is not weak evidence, it
-        // is no evidence. Signing one would put a coordinate into the permanent
-        // record that cannot support the claim being made about it.
-        fix = null;
-        gpsSlot = { busy: false, message: assessment.message ?? "unusable fix", tone: "bad" };
-      }
-    } catch (error) {
-      // The previous fix is deliberately left standing. A failed refresh is the
-      // absence of a newer answer, not evidence against the one already held.
-      gpsSlot = { busy: false, message: describeError(error, "could not get a fix"), tone: "bad" };
-    } finally {
-      // In `finally` so the button comes back even if the paint above throws:
-      // a stuck "Locating…" would strand the collector with no way to retry.
-      gpsSlot.busy = false;
-      paintEvidence("gps");
-    }
-  });
-
   const camera = document.getElementById("camera") as HTMLInputElement | null;
   on("shoot", "click", () => {
     if (photoSlot.busy || !camera) return;
@@ -869,7 +750,7 @@ function wireCapture(): void {
     if (!file) return;
 
     photoSlot = { busy: true, message: null, tone: null };
-    paintEvidence("photo");
+    paintEvidence();
 
     try {
       // Hash first, adopt second. `photo` and `photoHash` are what commit signs
@@ -892,7 +773,7 @@ function wireCapture(): void {
       // Cleared so picking the same file twice fires `change` again. Without
       // this, a retry after a failed read is silently ignored.
       camera.value = "";
-      paintEvidence("photo");
+      paintEvidence();
     }
   });
 
@@ -921,38 +802,14 @@ function wireCapture(): void {
 
 // ---------------------------------------------------------------- actions
 
-/**
- * Sign every draft this fix can honestly speak for, and send them.
- *
- * Called the moment a usable fix lands. Drafts too old for the window come back
- * `expired` and stay unsent with an explanation on the record — surfaced rather
- * than swallowed, because an unlocatable weigh-in is unpaid work the collector
- * needs to know about while they can still re-weigh.
- */
-async function settleDrafts(position: Fix): Promise<{ located: number; expired: number }> {
-  const result = { located: 0, expired: 0 };
-
-  for (const draft of await queue.awaitingGps()) {
-    const attached = await queue.attachFix(draft.id, position, (payload) =>
-      signWeighIn(payload, identity),
-    );
-    if (attached.outcome === "located") result.located += 1;
-    if (attached.outcome === "expired") result.expired += 1;
-  }
-
-  return result;
-}
-
 async function commit(): Promise<void> {
   const p = provisioning!;
   const weightInput = document.getElementById("weight") as HTMLInputElement | null;
   const weightKg = Number(weightInput?.value ?? "");
 
   // Weight and photo are perishable: the sack gets tipped and the truck leaves,
-  // and neither can be recovered ten minutes later. A position can — the
-  // collector is still standing at the hub. So these two are still refused up
-  // front, while a missing fix downgrades the record to a draft instead of
-  // discarding the capture.
+  // and neither can be recovered ten minutes later. Both are refused up front
+  // rather than banked incomplete.
   const problems: string[] = [];
   if (!Number.isFinite(weightKg) || weightKg <= 0) problems.push("a weight");
   if (!photoHash) problems.push("a photo");
@@ -963,8 +820,19 @@ async function commit(): Promise<void> {
     return;
   }
 
-  const unlocated: queue.UnlocatedPayload = {
-    schema: "proofchain.weighin.v1",
+  // The hub's own limits, checked before anything is signed. The server checks
+  // them again at ingest and its answer is the authoritative one — but by then
+  // the sack has been tipped, so a rejection there is unpaid work. Here it is
+  // still a correction: re-weigh, or split the load.
+  const outOfRange = weightProblem(weightKg, boundsForHub(hubChoices(p.hubs, p), p.hubId));
+  if (outOfRange) {
+    notice = { tone: "bad", text: outOfRange };
+    void render();
+    return;
+  }
+
+  const payload: WeighInPayload = {
+    schema: "proofchain.weighin.v2",
     collectorId: p.collectorId,
     hubId: p.hubId,
     deviceId: p.deviceId,
@@ -975,17 +843,12 @@ async function commit(): Promise<void> {
     nonce: randomNonce(),
   };
 
-  // Signed here only if a fix is in hand. A draft is stored unsigned on purpose:
-  // the signature covers the coordinates, so signing now and amending later would
-  // produce a record whose signature does not match what it claims.
-  const payload = fix ? { ...unlocated, lat: fix.lat, lng: fix.lng } : unlocated;
-
   await queue.enqueue({
     id: randomId(),
     payload,
-    signature: fix ? signWeighIn(payload as WeighInPayload, identity) : null,
+    signature: signWeighIn(payload, identity),
     photo,
-    status: fix ? "queued" : "awaiting-gps",
+    status: "queued",
     attempts: 0,
     lastError: null,
     createdAt: new Date().toISOString(),
@@ -994,8 +857,8 @@ async function commit(): Promise<void> {
     photoUploadedAt: null,
   });
 
-  // Reset only the per-weigh-in evidence; keep material and the GPS fix, since
-  // the next sack is nearly always the same material at the same spot.
+  // Reset only the per-weigh-in evidence; keep material, since the next sack is
+  // nearly always the same material.
   photo = null;
   photoHash = null;
   photoSlot = idleSlot();
@@ -1003,19 +866,10 @@ async function commit(): Promise<void> {
   // Cleared explicitly: render() deliberately carries the weight field across
   // re-renders, so a committed weigh-in must blank it or the next one inherits it.
   if (weightInput) weightInput.value = "";
-  notice = fix
-    ? { tone: "good", text: `Signed and queued ${payload.weightKg.toFixed(3)} kg.` }
-    : {
-        tone: "warn",
-        text:
-          `Held ${payload.weightKg.toFixed(3)} kg without a position. ` +
-          `Tap "Get GPS fix" and it will be signed and sent automatically.`,
-      };
+  notice = { tone: "good", text: `Signed and queued ${payload.weightKg.toFixed(3)} kg.` };
 
   await render();
-  // A draft has nothing to send, and running a sync pass would only spend a
-  // field connection discovering that.
-  if (fix) void runSync();
+  void runSync();
 }
 
 /**
@@ -1099,13 +953,11 @@ async function syncHubs(): Promise<void> {
 
   saveProvisioning({ ...p, ...(merged.assignment ?? {}), hubs: merged.hubs });
 
-  // An operator moved the hub this device is standing at, so any fix on screen
-  // was judged against the old fence.
+  // An operator renamed the hub this device is capturing against.
   if (merged.assignment) {
-    fix = null;
     notice = {
       tone: "warn",
-      text: `${merged.assignment.hubName} has moved. Take a new GPS fix.`,
+      text: `This hub is now called ${merged.assignment.hubName}.`,
     };
   }
 

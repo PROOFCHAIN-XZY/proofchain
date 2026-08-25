@@ -103,7 +103,7 @@ function Row({ record }: { record: QueuedWeighIn }) {
           <Text style={[styles.rowStatus, { color: tone }]}>{record.status.toUpperCase()}</Text>
         </View>
         <Text style={styles.rowMeta}>
-          {at.toLocaleString()} · {record.payload.lat.toFixed(5)}, {record.payload.lng.toFixed(5)}
+          {at.toLocaleString()}
         </Text>
         {record.lastError ? <Text style={styles.rowError}>{record.lastError}</Text> : null}
       </View>

@@ -11,11 +11,12 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import type { MaterialType, WeighInPayload } from "@shared/types";
+import { formatKg, weightProblem } from "@shared/integrity-copy";
 import { colors, radius, space, type } from "../theme";
 import type { DeviceIdentity, DeviceMeta } from "../lib/identity";
 import { signWeighIn } from "../lib/identity";
 import { enqueue, type QueuedWeighIn } from "../lib/queue";
-import { appStore, currentFix, hashPhotoFile, randomNonce } from "../lib/native";
+import { appStore, hashPhotoFile, randomNonce } from "../lib/native";
 import { getBackendUrl } from "../lib/api";
 import {
   fallbackCatalogue,
@@ -85,7 +86,34 @@ export function CaptureScreen({ identity, device, onCaptured }: Props) {
   );
 
   const weightKg = useMemo(() => Number.parseFloat(weight.replace(",", ".")), [weight]);
-  const weightValid = Number.isFinite(weightKg) && weightKg > 0 && weightKg <= 500;
+
+  /**
+   * The hub's own limits, recorded at enrolment.
+   *
+   * Not a constant: the ceiling belongs to the hub, and a phone that hardcodes
+   * one either blocks weigh-ins a hub would have accepted or waves through ones
+   * it will refuse at ingest — and a refusal at ingest arrives hours later, with
+   * the material gone and the work unpaid. A device that never recorded them
+   * enforces nothing and leaves the judgement to the server.
+   */
+  const bounds = useMemo(
+    () => ({ minKg: device.minWeightKg ?? null, maxKg: device.maxWeightKg ?? null }),
+    [device.maxWeightKg, device.minWeightKg],
+  );
+
+  const outOfRange = useMemo(() => weightProblem(weightKg, bounds), [bounds, weightKg]);
+
+  /** Shown before a weight is typed, so the limit is planned around, not hit. */
+  const rangeHint = useMemo(() => {
+    if (bounds.minKg === null && bounds.maxKg === null) return null;
+    if (bounds.minKg !== null && bounds.maxKg !== null) {
+      return `This hub accepts ${formatKg(bounds.minKg)}–${formatKg(bounds.maxKg)} kg per weigh-in.`;
+    }
+    return bounds.maxKg !== null
+      ? `This hub accepts up to ${formatKg(bounds.maxKg)} kg per weigh-in.`
+      : `This hub accepts ${formatKg(bounds.minKg as number)} kg or more per weigh-in.`;
+  }, [bounds]);
+  const weightValid = Number.isFinite(weightKg) && weightKg > 0 && outOfRange === null;
 
   const capture = useCallback(async () => {
     if (!weightValid || busy) return;
@@ -99,19 +127,14 @@ export function CaptureScreen({ identity, device, onCaptured }: Props) {
       setStep("Hashing photo");
       const photoHash = await hashPhotoFile(photo.uri);
 
-      setStep("Getting GPS fix");
-      const fix = await currentFix();
-
       setStep("Signing");
       const payload: WeighInPayload = {
-        schema: "proofchain.weighin.v1",
+        schema: "proofchain.weighin.v2",
         collectorId: device.collectorId,
         hubId: device.hubId,
         deviceId: device.deviceId,
         weightKg,
         material,
-        lat: fix.lat,
-        lng: fix.lng,
         capturedAt: new Date().toISOString(),
         photoHash,
         nonce: randomNonce(),
@@ -179,10 +202,18 @@ export function CaptureScreen({ identity, device, onCaptured }: Props) {
           placeholder="0.00"
           placeholderTextColor={colors.textFaint}
           keyboardType="decimal-pad"
-          maxLength={7}
+          maxLength={9}
         />
         <Text style={styles.unit}>kg</Text>
       </View>
+      {/* The limit before it is hit, then the correction if it is. Both sit
+          under the field the collector is typing in, not in an alert they have
+          to dismiss with one hand while holding a sack with the other. */}
+      {outOfRange ? (
+        <Text style={styles.weightProblem}>{outOfRange}</Text>
+      ) : rangeHint ? (
+        <Text style={styles.hint}>{rangeHint}</Text>
+      ) : null}
 
       <View style={styles.labelRow}>
         <Text style={styles.label}>MATERIAL</Text>
@@ -328,6 +359,17 @@ const styles = StyleSheet.create({
   /** Field guidance for the selected material: what actually counts as it. */
   hint: {
     color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: space.sm,
+  },
+  /**
+   * A weight this hub will not accept. Same colour as a rejected record in the
+   * queue, so the two states read as the same thing at a glance — one caught in
+   * time, one caught too late.
+   */
+  weightProblem: {
+    color: colors.rejected,
     fontSize: 13,
     lineHeight: 18,
     marginTop: space.sm,

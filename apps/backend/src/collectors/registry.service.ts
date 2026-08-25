@@ -4,16 +4,15 @@ import { Repository } from "typeorm";
 import { publicKeyFromBase64 } from "@proofchain/shared";
 import { CollectorEntity, DeviceEntity, HubEntity } from "../database/entities";
 import type { CreateCollectorDto, CreateHubDto, EnrolDeviceDto } from "../common/dto";
-import { NominatimClient, type GeocodeResult } from "./nominatim.client";
 
 /** What a capture device is told about a hub. */
 export interface HubDirectoryEntry {
   id: string;
   code: string;
   name: string;
-  lat: number;
-  lng: number;
-  geofenceRadiusM: number;
+  /** Sanity bounds for a single weigh-in here, so the device can pre-check. */
+  minWeightKg: number;
+  maxWeightKg: number;
 }
 
 /** Collectors, their devices, and the hubs they work at. */
@@ -25,7 +24,6 @@ export class RegistryService {
     @InjectRepository(CollectorEntity) private readonly collectors: Repository<CollectorEntity>,
     @InjectRepository(DeviceEntity) private readonly devices: Repository<DeviceEntity>,
     @InjectRepository(HubEntity) private readonly hubs: Repository<HubEntity>,
-    private readonly geocoder: NominatimClient,
   ) {}
 
   listCollectors() {
@@ -42,8 +40,6 @@ export class RegistryService {
         phone: dto.phone,
         cooperativeId: dto.cooperativeId ?? null,
         kycLevel: dto.kycLevel ?? "none",
-        homeLat: dto.homeLat ?? null,
-        homeLng: dto.homeLng ?? null,
         active: true,
       }),
     );
@@ -98,25 +94,30 @@ export class RegistryService {
    * The hub list a capture device needs, and nothing more.
    *
    * Separate from listHubs() because it is public: a field phone holds no
-   * credentials — the device signature is its only one, and it deliberately does
-   * not extend to reading configuration — but it cannot judge whether a fix
-   * places the collector inside a geofence without knowing where the hubs are.
-   * Same reasoning as the material catalogue.
+   * credentials — the device signature is its only one — but it still has to
+   * name the hub it is capturing for. Same reasoning as the material catalogue.
    *
-   * Trimmed deliberately. Coordinates and fences are already on every enrolled
-   * phone and printed in audit reports, so publishing them is not new exposure;
-   * the weight bounds are operational configuration and stay behind auth.
+   * Trimmed deliberately, but the weight bounds are part of it. They were held
+   * back as operational configuration once, and that cost collectors weigh-ins:
+   * a device that does not know the ceiling cannot stop a collector signing a
+   * weight the hub will refuse, so the refusal arrived at sync time with the
+   * material long gone. Withholding them never protected anything either — the
+   * ingest response already tells an unauthenticated device the exact figure
+   * ("300 kg above hub maximum 200 kg"). Publishing them up front turns a
+   * rejection into a correction the collector can still make.
    */
   async hubDirectory(): Promise<HubDirectoryEntry[]> {
     const hubs = await this.hubs.find({ order: { code: "ASC" } });
 
+    // The entity's numeric transformer has already narrowed these; Number() is
+    // belt and braces for the one thing this endpoint must never emit — a
+    // string where a field phone expects something it can compare and format.
     return hubs.map((hub) => ({
       id: hub.id,
       code: hub.code,
       name: hub.name,
-      lat: hub.lat,
-      lng: hub.lng,
-      geofenceRadiusM: hub.geofenceRadiusM,
+      minWeightKg: Number(hub.minWeightKg),
+      maxWeightKg: Number(hub.maxWeightKg),
     }));
   }
 
@@ -127,61 +128,11 @@ export class RegistryService {
     const hub = this.hubs.create({
       code: dto.code,
       name: dto.name,
-      lat: dto.lat,
-      lng: dto.lng,
-      geofenceRadiusM: dto.geofenceRadiusM ?? 250,
       minWeightKg: dto.minWeightKg ?? 0.1,
-      maxWeightKg: dto.maxWeightKg ?? 500,
-      ...(await this.resolveLocality(dto.lat, dto.lng)),
+      maxWeightKg: dto.maxWeightKg ?? 10_000,
     });
 
     return this.hubs.save(hub);
   }
 
-  /**
-   * Best-effort place name for a hub coordinate.
-   *
-   * Enrolling a hub must not depend on a third-party geocoder being up, so a
-   * failure here returns empty columns and logs. The label is recoverable at any
-   * time — `npm run hub:locality` fills in whatever is still missing — whereas a
-   * hub that could not be created because OSM was rate-limiting would block real
-   * field work for a cosmetic field.
-   */
-  private async resolveLocality(
-    lat: number,
-    lng: number,
-  ): Promise<Pick<HubEntity, "locality" | "localityResolvedAt" | "localityAttribution">> {
-    const absent = {
-      locality: null,
-      localityResolvedAt: null,
-      localityAttribution: null,
-    };
-
-    // The client is written to report failures rather than throw, but it is an
-    // I/O boundary: a caught exception here is the difference between a hub with
-    // no label and no hub at all.
-    let result: GeocodeResult;
-    try {
-      result = await this.geocoder.reverseGeocode(lat, lng);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`locality lookup threw for ${lat}, ${lng}: ${detail}`);
-      return absent;
-    }
-
-    if (!result.ok) {
-      // "disabled" is a configuration choice rather than a fault, so it is not
-      // worth a warning on every hub creation.
-      if (result.reason !== "disabled") {
-        this.logger.warn(`no locality for ${lat}, ${lng}: ${result.reason} — ${result.detail}`);
-      }
-      return absent;
-    }
-
-    return {
-      locality: result.value.label,
-      localityResolvedAt: new Date(),
-      localityAttribution: result.value.attribution,
-    };
-  }
 }

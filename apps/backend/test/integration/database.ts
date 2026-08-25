@@ -8,6 +8,8 @@ import { InitialSchema1786190303177 } from "../../src/database/migrations/178619
 import { AnchorAttempts1786400000000 } from "../../src/database/migrations/1786400000000-AnchorAttempts";
 import { HubLocality1786500000000 } from "../../src/database/migrations/1786500000000-HubLocality";
 import { Materials1786600000000 } from "../../src/database/migrations/1786600000000-Materials";
+import { MaterialExamples1786700000000 } from "../../src/database/migrations/1786700000000-MaterialExamples";
+import { RemoveLocation1786800000000 } from "../../src/database/migrations/1786800000000-RemoveLocation";
 
 /**
  * Migrations are listed as classes rather than as the `src/**\/migrations/*.ts`
@@ -25,6 +27,8 @@ const MIGRATIONS = [
   AnchorAttempts1786400000000,
   HubLocality1786500000000,
   Materials1786600000000,
+  MaterialExamples1786700000000,
+  RemoveLocation1786800000000,
 ];
 
 function assertAllMigrationsRegistered(): void {

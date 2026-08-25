@@ -1,14 +1,14 @@
 # ProofChain TLS termination and origin unification.
 #
-# This file exists to solve one problem: geolocation, the camera and service
+# This file exists to solve one problem: the camera and service
 # workers are all gated behind a *secure context*. A collector's phone opening
-# the capture app over plain HTTP gets PERMISSION_DENIED from the GPS no matter
+# the capture app over plain HTTP gets PERMISSION_DENIED from the camera no matter
 # what the phone's settings say, and no amount of application code can lift that
 # — it is a browser rule, not a bug.
 #
 # The second problem is created by fixing the first. A secure page may not
 # `fetch()` a plain-HTTP endpoint, so serving capture over HTTPS while the API
-# stays on `http://host:3000` trades a broken GPS for broken sync: mixed content,
+# stays on `http://host:3000` trades a broken camera for broken sync: mixed content,
 # blocked before it leaves the phone. The fix is that each app and its API share
 # one origin, and TLS is terminated here, once, in front of everything.
 #
@@ -37,8 +37,8 @@
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
-		# Capture needs the camera and GPS; nothing here needs a microphone.
-		Permissions-Policy "camera=(self), geolocation=(self), microphone=()"
+		# Capture needs the camera; nothing here needs a microphone.
+		Permissions-Policy "camera=(self), geolocation=(), microphone=()"
 		# Caddy advertises itself by default; a version number helps nobody but
 		# someone matching a CVE against it.
 		-Server

@@ -142,7 +142,7 @@ describe("BatchesService.addEvents — quarantine", () => {
       quarantined: true,
       integrity: {
         outcome: "fail",
-        findings: [{ check: "geofence_ok", outcome: "fail", detail: "1.2 km from hub" }],
+        findings: [{ check: "weight_in_range", outcome: "fail", detail: "1.2 km from hub" }],
       },
     });
 
@@ -172,8 +172,8 @@ describe("BatchesService.addEvents — hub and material boundaries", () => {
     const batch = await service.create(seeded.hub.id, "PET");
     const foreign = await insertEvent(db.dataSource, other);
 
-    // Hub membership is what ties a batch to a geofence and an operator; a
-    // cross-hub event would make the batch's provenance unstateable.
+    // Hub membership is what ties a batch to an operator; a cross-hub event
+    // would make the batch's provenance unstateable.
     await expect(service.addEvents(batch.id, [foreign.id])).rejects.toThrow(/not eligible/);
   });
 

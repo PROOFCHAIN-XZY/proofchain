@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  fenceLabel,
+  boundsForHub,
   hubChoices,
   hubLabel,
   mergeHubSnapshot,
@@ -9,28 +9,21 @@ import {
 } from "../src/lib/hubs";
 
 /**
- * Switching hubs is the one control that can put a collector in the position of
- * being told they are in range while the server quarantines everything they
- * capture. These tests pin the invariant that prevents it: the id and the fence
- * always move together.
+ * Switching hubs rewrites the hub id that goes into the signed payload, so the
+ * label on screen must always describe the id that will be signed. These tests
+ * pin that invariant.
  */
 
 const NAIROBI: HubOption = {
   id: "hub-nbo",
   code: "NBO-01",
   name: "Nairobi Pilot Hub",
-  lat: -1.286389,
-  lng: 36.817223,
-  geofenceRadiusM: 300,
 };
 
 const LAGOS: HubOption = {
   id: "hub-los",
   code: "LAG-01",
   name: "Lagos Pilot Hub",
-  lat: 6.524379,
-  lng: 3.379206,
-  geofenceRadiusM: 500,
 };
 
 const HUBS = [NAIROBI, LAGOS];
@@ -56,42 +49,14 @@ describe("hubLabel", () => {
   });
 });
 
-describe("fenceLabel", () => {
-  it("states the fence in metres", () => {
-    expect(fenceLabel(300)).toBe("300 m fence");
-  });
-
-  it("says the fence is unknown rather than rendering NaN", () => {
-    // A device provisioned by an older build has no geofenceRadiusM, and
-    // Math.round(undefined) put "NaN m fence" on the collector's screen.
-    expect(fenceLabel(undefined)).toBe("fence unknown");
-    expect(fenceLabel(Number.NaN)).toBe("fence unknown");
-    expect(fenceLabel(0)).toBe("fence unknown");
-  });
-});
-
 describe("selectHub", () => {
-  it("moves the coordinates and the fence with the id", () => {
+  it("moves the label with the id", () => {
     const assignment = selectHub(HUBS, "hub-los");
 
     expect(assignment).toEqual({
       hubId: "hub-los",
       hubName: "LAG-01 — Lagos Pilot Hub",
-      hubLat: 6.524379,
-      hubLng: 3.379206,
-      geofenceRadiusM: 500,
     });
-  });
-
-  it("never leaves the fence behind when switching between countries", () => {
-    // The failure this guards against: keeping Nairobi's 300 m fence while
-    // signing Lagos's id. assessFix would judge a Lagos fix against a Kenyan
-    // coordinate, tell the collector they are 3,800 km out, and be right for
-    // the wrong reason — or worse, pass and let the server quarantine it.
-    const assignment = selectHub(HUBS, "hub-los");
-
-    expect(assignment?.geofenceRadiusM).toBe(LAGOS.geofenceRadiusM);
-    expect(assignment?.hubLat).not.toBe(NAIROBI.lat);
   });
 
   it("returns null for a hub that is not in the snapshot", () => {
@@ -107,9 +72,6 @@ describe("hubChoices", () => {
   const current = {
     hubId: "hub-nbo",
     hubName: "NBO-01 — Nairobi Pilot Hub",
-    hubLat: NAIROBI.lat,
-    hubLng: NAIROBI.lng,
-    geofenceRadiusM: 300,
   };
 
   it("offers the snapshot when it holds the assigned hub", () => {
@@ -129,11 +91,7 @@ describe("hubChoices", () => {
     const choices = hubChoices(undefined, current);
 
     expect(choices).toHaveLength(1);
-    expect(choices[0]).toMatchObject({
-      id: "hub-nbo",
-      lat: NAIROBI.lat,
-      geofenceRadiusM: 300,
-    });
+    expect(choices[0]).toMatchObject({ id: "hub-nbo" });
   });
 
   it("treats an empty snapshot the same as an absent one", () => {
@@ -145,9 +103,6 @@ describe("mergeHubSnapshot", () => {
   const current = {
     hubId: "hub-nbo",
     hubName: "NBO-01 — Nairobi Pilot Hub",
-    hubLat: NAIROBI.lat,
-    hubLng: NAIROBI.lng,
-    geofenceRadiusM: 300,
   };
 
   it("adopts a freshly fetched directory", () => {
@@ -157,14 +112,14 @@ describe("mergeHubSnapshot", () => {
     expect(merged.assignment).toBeNull();
   });
 
-  it("re-points the device when its own hub has moved", () => {
-    // An operator ran hub:relocate. The phone would otherwise keep judging fixes
-    // against a coordinate the hub no longer sits at.
-    const moved = [{ ...NAIROBI, lat: 6.9, lng: 37.2, geofenceRadiusM: 450 }];
+  it("re-points the device when its own hub was renamed", () => {
+    // An operator renamed the site. The phone would otherwise keep showing a
+    // label the operator has already changed.
+    const renamed = [{ ...NAIROBI, name: "Nairobi Central Hub" }];
 
-    const merged = mergeHubSnapshot(moved, current);
+    const merged = mergeHubSnapshot(renamed, current);
 
-    expect(merged.assignment).toMatchObject({ hubLat: 6.9, geofenceRadiusM: 450 });
+    expect(merged.assignment).toMatchObject({ hubName: "NBO-01 — Nairobi Central Hub" });
   });
 
   it("leaves the assignment alone when nothing about the hub changed", () => {
@@ -183,5 +138,28 @@ describe("mergeHubSnapshot", () => {
 
   it("ignores an empty directory rather than emptying the picker", () => {
     expect(mergeHubSnapshot([], current).hubs.map((h) => h.id)).toContain("hub-nbo");
+  });
+});
+
+describe("boundsForHub", () => {
+  const withBounds: HubOption = { ...NAIROBI, minWeightKg: 0.5, maxWeightKg: 10_000 };
+
+  it("returns the assigned hub's own bounds, not the first hub's", () => {
+    // A phone that reads the wrong hub's ceiling is worse than one that reads
+    // none: it would refuse weights this site accepts.
+    const bounds = boundsForHub(
+      [{ ...LAGOS, minWeightKg: 1, maxWeightKg: 50 }, withBounds],
+      "hub-nbo",
+    );
+
+    expect(bounds).toEqual({ minKg: 0.5, maxKg: 10_000 });
+  });
+
+  it("reports unknown bounds for a snapshot taken before they were published", () => {
+    expect(boundsForHub([NAIROBI], "hub-nbo")).toEqual({ minKg: null, maxKg: null });
+  });
+
+  it("reports unknown bounds for a hub the device does not hold", () => {
+    expect(boundsForHub([withBounds], "hub-lagos")).toEqual({ minKg: null, maxKg: null });
   });
 });

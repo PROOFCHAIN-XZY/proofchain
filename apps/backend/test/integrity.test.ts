@@ -14,9 +14,6 @@ import { evaluateIntegrity, type IntegrityContext } from "../src/events/integrit
 
 const HUB = {
   id: "hub-1",
-  lat: -1.286389,
-  lng: 36.817223,
-  geofenceRadiusM: 250,
   minWeightKg: 0.5,
   maxWeightKg: 200,
 };
@@ -26,14 +23,12 @@ const keypair = generateDeviceKeypair();
 
 function makePayload(overrides: Partial<WeighInPayload> = {}): WeighInPayload {
   return {
-    schema: "proofchain.weighin.v1",
+    schema: "proofchain.weighin.v2",
     collectorId: "collector-1",
     hubId: HUB.id,
     deviceId: "device-1",
     weightKg: 12.5,
     material: "PET",
-    lat: HUB.lat,
-    lng: HUB.lng,
     capturedAt: "2026-08-08T09:59:30.000Z",
     photoHash: "a".repeat(64),
     nonce: "b".repeat(32),
@@ -84,7 +79,6 @@ describe("evaluateIntegrity — the honest path", () => {
     expect(checks).toEqual([
       "clock_plausible",
       "device_enrolled",
-      "geofence_ok",
       "not_duplicate",
       "photo_present",
       "signature_valid",
@@ -158,37 +152,6 @@ describe("evaluateIntegrity — forged or tampered records", () => {
   });
 });
 
-describe("evaluateIntegrity — location", () => {
-  it("fails a weigh-in recorded a kilometre from the hub", () => {
-    const p = makePayload({ lat: HUB.lat + 0.01 });
-    const verdict = evaluateIntegrity(p, signed(p), makeContext());
-
-    expect(verdict.outcome).toBe("fail");
-    expect(findingFor(verdict, "geofence_ok")?.detail).toMatch(/m from hub/);
-  });
-
-  it("fails a null-island fix, the classic sign of a stubbed GPS", () => {
-    const p = makePayload({ lat: 0, lng: 0 });
-    const verdict = evaluateIntegrity(p, signed(p), makeContext());
-
-    expect(findingFor(verdict, "geofence_ok")?.outcome).toBe("fail");
-  });
-
-  it("fails impossible coordinates outright", () => {
-    const p = makePayload({ lat: 91, lng: 200 });
-    const verdict = evaluateIntegrity(p, signed(p), makeContext());
-
-    expect(findingFor(verdict, "geofence_ok")?.detail).toMatch(/not valid/);
-  });
-
-  it("accepts a fix just inside the fence", () => {
-    const p = makePayload({ lat: HUB.lat + 0.001 }); // ~111 m
-    const verdict = evaluateIntegrity(p, signed(p), makeContext());
-
-    expect(findingFor(verdict, "geofence_ok")?.outcome).toBe("pass");
-  });
-});
-
 describe("evaluateIntegrity — weight sanity", () => {
   it("fails a weight above the hub's plausible maximum", () => {
     const p = makePayload({ weightKg: 5000 });
@@ -259,12 +222,11 @@ describe("evaluateIntegrity — verdict aggregation", () => {
   });
 
   it("collects multiple independent failures rather than stopping at the first", () => {
-    const p = makePayload({ weightKg: 9999, lat: 0, lng: 0 });
+    const p = makePayload({ weightKg: 9999 });
     const verdict = evaluateIntegrity(p, signed(p), makeContext({ isDuplicate: true }));
 
     const failed = verdict.findings.filter((f) => f.outcome === "fail").map((f) => f.check);
     expect(failed).toContain("weight_in_range");
-    expect(failed).toContain("geofence_ok");
     expect(failed).toContain("not_duplicate");
   });
 });

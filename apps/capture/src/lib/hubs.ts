@@ -6,33 +6,35 @@
  * another. Re-enrolling to move between them would mean an operator login in the
  * field, which is exactly what this app is built not to require.
  *
- * Two things make this safe rather than a hole. The hub id travels inside the
- * signed payload, so a switch is recorded, not implicit. And the server geofences
- * every event against the hub it names: claiming a hub you are not standing at
- * quarantines the weigh-in instead of laundering it. The dropdown therefore lets
- * a collector say where they are; it does not let them say where they were.
+ * What makes this safe rather than a hole is that the hub id travels inside the
+ * signed payload, so a switch is recorded, not implicit.
  *
  * The list is a snapshot taken at enrolment, because a field device holds no
  * operator token and `/hubs` requires one. It refreshes on the next enrolment.
  */
 
-/** The hub facts a device needs to judge a fix and name a hub in a payload. */
+/** The hub facts a device needs to name a hub in a payload. */
 export interface HubOption {
   id: string;
   code: string;
   name: string;
-  lat: number;
-  lng: number;
-  geofenceRadiusM: number;
+  /**
+   * Sanity bounds for one weigh-in here, as published by the hub directory.
+   *
+   * Optional because a snapshot taken before the directory carried them is
+   * still a valid snapshot on a phone that has not been back in signal since,
+   * and a synthesised option has no directory entry behind it at all. Absent
+   * means "not known here", which the weight check reads as "do not judge" —
+   * never as zero.
+   */
+  minWeightKg?: number;
+  maxWeightKg?: number;
 }
 
 /** The subset of provisioning a hub selection rewrites. */
 export interface HubAssignment {
   hubId: string;
   hubName: string;
-  hubLat: number;
-  hubLng: number;
-  geofenceRadiusM: number;
 }
 
 /**
@@ -49,24 +51,10 @@ export function hubLabel(hub: Pick<HubOption, "code" | "name">): string {
 }
 
 /**
- * The fence note beside the Hub label.
- *
- * A device provisioned by a build that predates `geofenceRadiusM` has none, and
- * `Math.round(undefined)` put "NaN m fence" in front of the collector. Saying
- * the fence is unknown is both true and a cue to re-pair.
- */
-export function fenceLabel(radiusM: number | undefined): string {
-  if (!Number.isFinite(radiusM) || (radiusM ?? 0) <= 0) return "fence unknown";
-  return `${Math.round(radiusM!)} m fence`;
-}
-
-/**
  * The assignment for a chosen hub, or null if it is not in the snapshot.
  *
- * Every field moves together. Taking the id without its coordinates would leave
- * the device judging fixes against the *old* hub's fence while signing the new
- * hub's id — the collector would be told they are in range, and the server would
- * quarantine every event for being out of it.
+ * Every field moves together, so the label on screen always describes the hub id
+ * that will be signed into the payload.
  */
 export function selectHub(hubs: readonly HubOption[], hubId: string): HubAssignment | null {
   const hub = hubs.find((h) => h.id === hubId);
@@ -75,9 +63,6 @@ export function selectHub(hubs: readonly HubOption[], hubId: string): HubAssignm
   return {
     hubId: hub.id,
     hubName: hubLabel(hub),
-    hubLat: hub.lat,
-    hubLng: hub.lng,
-    geofenceRadiusM: hub.geofenceRadiusM,
   };
 }
 
@@ -104,9 +89,6 @@ export function hubChoices(
         id: current.hubId,
         code: current.hubCode ?? "",
         name: current.hubName,
-        lat: current.hubLat,
-        lng: current.hubLng,
-        geofenceRadiusM: current.geofenceRadiusM,
       },
     ];
   }
@@ -116,9 +98,6 @@ export function hubChoices(
       id: current.hubId,
       code: current.hubCode ?? "",
       name: current.hubName,
-      lat: current.hubLat,
-      lng: current.hubLng,
-      geofenceRadiusM: current.geofenceRadiusM,
     },
   ];
 }
@@ -127,9 +106,8 @@ export function hubChoices(
 export interface MergedSnapshot {
   hubs: HubOption[];
   /**
-   * Set only when the device's own hub changed underneath it — a relocation, a
-   * widened fence — so the caller can re-save provisioning without churning it
-   * on every refresh.
+   * Set only when the device's own hub changed underneath it — a rename — so the
+   * caller can re-save provisioning without churning it on every refresh.
    */
   assignment: HubAssignment | null;
 }
@@ -140,8 +118,8 @@ export interface MergedSnapshot {
  * Two things have to survive a refresh. A device must keep its assigned hub even
  * if the directory no longer lists it — retired, or a different backend — because
  * losing it would leave the phone unable to sign anything. And if the assigned
- * hub *has* moved, the device must adopt the new coordinate and fence, or it will
- * keep judging fixes against a place the hub has left.
+ * hub has been renamed, the device must adopt the new label, or the collector
+ * keeps seeing a name the operator has already changed.
  */
 export function mergeHubSnapshot(
   directory: readonly HubOption[],
@@ -152,10 +130,26 @@ export function mergeHubSnapshot(
 
   if (!fresh) return { hubs, assignment: null };
 
-  const moved =
-    fresh.lat !== current.hubLat ||
-    fresh.lng !== current.hubLng ||
-    fresh.geofenceRadiusM !== current.geofenceRadiusM;
+  const renamed = hubLabel(fresh) !== current.hubName;
 
-  return { hubs, assignment: moved ? selectHub([fresh], fresh.id) : null };
+  return { hubs, assignment: renamed ? selectHub([fresh], fresh.id) : null };
+}
+
+/**
+ * The bounds to check a weight against, for the hub the device is capturing at.
+ *
+ * Returns nulls rather than defaults when the hub is unknown to the snapshot or
+ * predates bounds being published. A guessed ceiling would be worse than none:
+ * too low it blocks honest weigh-ins, too high it is not a check at all.
+ */
+export function boundsForHub(
+  hubs: readonly HubOption[],
+  hubId: string,
+): { minKg: number | null; maxKg: number | null } {
+  const hub = hubs.find((h) => h.id === hubId);
+
+  return {
+    minKg: hub?.minWeightKg ?? null,
+    maxKg: hub?.maxWeightKg ?? null,
+  };
 }

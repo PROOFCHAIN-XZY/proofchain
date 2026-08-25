@@ -3,14 +3,12 @@ import { canonicalize, canonicalEventPayload, eventPayloadHash } from "../src/ca
 import type { WeighInPayload } from "../src/types.js";
 
 const base: WeighInPayload = {
-  schema: "proofchain.weighin.v1",
+  schema: "proofchain.weighin.v2",
   collectorId: "9f1c5d2e-0000-4000-8000-000000000001",
   hubId: "hub-nairobi-01",
   deviceId: "device-abc",
   weightKg: 12.5,
   material: "PET",
-  lat: -1.286389,
-  lng: 36.817223,
   capturedAt: "2026-08-08T09:15:00.000Z",
   photoHash: "a".repeat(64),
   nonce: "b".repeat(32),
@@ -48,8 +46,8 @@ describe("canonicalEventPayload", () => {
     expect(canonicalEventPayload(shuffled)).toBe(canonicalEventPayload(base));
   });
 
-  it("quantises weight and coordinates so float noise cannot break a signature", () => {
-    const jittered = { ...base, weightKg: 12.5000000001, lat: -1.2863890000001 };
+  it("quantises weight so float noise cannot break a signature", () => {
+    const jittered = { ...base, weightKg: 12.5000000001 };
     expect(canonicalEventPayload(jittered)).toBe(canonicalEventPayload(base));
   });
 
@@ -65,8 +63,6 @@ describe("canonicalEventPayload", () => {
     const fields: Array<Partial<WeighInPayload>> = [
       { weightKg: 12.6 },
       { material: "HDPE" },
-      { lat: -1.2 },
-      { lng: 36.9 },
       { capturedAt: "2026-08-08T09:16:00.000Z" },
       { photoHash: "c".repeat(64) },
       { collectorId: "9f1c5d2e-0000-4000-8000-000000000002" },

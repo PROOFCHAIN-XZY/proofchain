@@ -9,7 +9,7 @@ Waste collectors record weigh-ins of recycled plastic on phones. Each weigh-in i
 A plastic credit is worth $140–800 per tonne, creating direct financial incentive to spoof weigh-ins. ProofChain's guarantee is:
 
 1. **Authenticity** — Every weigh-in is signed by an enrolled device. Tampering with the payload invalidates the signature.
-2. **Integrity** — Events pass server-side checks (geofence, weight range, duplicate detection, clock plausibility, device enrollment).
+2. **Integrity** — Events pass server-side checks (weight range, duplicate detection, clock plausibility, device enrollment).
 3. **Immutability** — The Merkle root is anchored on Stellar, proving the batch membership and order cannot be altered after sealing.
 4. **Verifiability** — Any third party can independently recompute the Merkle root from the event list, check one event's proof, and compare the root to the Stellar transaction on Horizon.
 
@@ -21,7 +21,7 @@ A plastic credit is worth $140–800 per tonne, creating direct financial incent
 ┌─────────────────────────────────────────────────────────────────┐
 │ Offline-first Capture (capture PWA + mobile Expo app)           │
 │  • Ed25519 signing on-device                                     │
-│  • GPS + photo hash + weight from scale                           │
+│  • Photo hash + weight from scale                                 │
 │  • IndexedDB queue for offline operation                          │
 └────────────────────────┬────────────────────────────────────────┘
                          │
@@ -29,7 +29,7 @@ A plastic credit is worth $140–800 per tonne, creating direct financial incent
                          │
 ┌────────────────────────▼────────────────────────────────────────┐
 │ Backend (NestJS + Postgres + Redis)                             │
-│  • Integrity v1 checks (7 checks: signature, geofence, etc.)    │
+│  • Integrity v1 checks (6 checks: signature, weight, etc.)      │
 │  • Batch management                                              │
 │  • Merkle tree sealing                                           │
 │  • Chain of custody tracking                                     │
@@ -70,7 +70,7 @@ A plastic credit is worth $140–800 per tonne, creating direct financial incent
 
 1. **Capture** — Collector uses phone/PWA to photograph a weigh-in. Device signs the payload (schema, IDs, weight, location, photo hash, timestamp, nonce) with its ed25519 private key.
 2. **Ingest** — Server receives payload + signature. Public signature verification ensures authenticity. Database check on payload hash prevents replay (replay = identical nonce).
-3. **Integrity** — Server runs 7 checks: device enrolled, signature valid, geofence (within hub radius), weight in range, not a duplicate, clock plausible, photo hash is valid sha256. Any *fail* quarantines the event; it never enters a batch.
+3. **Integrity** — Server runs 6 checks: device enrolled, signature valid, weight in range, not a duplicate, clock plausible, photo hash is valid sha256. Any *fail* quarantines the event; it never enters a batch.
 4. **Batch** — Operator opens a batch for a hub + material. Cleans events are added to the batch. Operator seals the batch, which computes a Merkle tree from the event hashes and freezes membership.
 5. **Anchor** — Background worker reads the sealed batch, submits a Stellar transaction writing the Merkle root to the ledger (via `manageData` and `memo.hash`), and verifies it back off the ledger before recording the transaction ID.
 6. **Report** — Auditor or buyer downloads the audit report for a batch. It contains all events, their Merkle proofs, the sealed root, and the Stellar transaction. The buyer can independently verify the root and proofs without trusting ProofChain.
@@ -144,7 +144,7 @@ proofchain/
    npm run seed
    ```
    The seed creates:
-   - One hub (Nairobi Pilot Hub, geofence 300 m)
+   - One hub (Nairobi Pilot Hub)
    - Two collectors (Amina Wanjiru, Joseph Otieno)
    - One enrolled ed25519 device per collector, with the private keys written to
      `apps/backend/var/seed-devices.json` so the capture app and the demo can
@@ -201,7 +201,7 @@ node scripts/demo-e2e.mjs
 ## What's Included in This Release
 
 - **Weigh-in signing** — Devices sign payloads on-device; server verifies.
-- **Integrity v1** — 7 checks covering signature, enrollment, geofence, weight, duplicates, clock, photo hash.
+- **Integrity v1** — 6 checks covering signature, enrollment, weight, duplicates, clock, photo hash.
 - **Batch sealing** — Merkle tree computation, membership freeze.
 - **Stellar anchoring** — Classic layer (`manageData` + `memo.hash`), testnet only.
 - **Independent verification** — Merkle proofs, Horizon lookup, audit report.

@@ -14,7 +14,6 @@ export {
   canonicalize,
   canonicalEventPayload,
   WEIGHT_DECIMALS,
-  COORD_DECIMALS,
 } from "./canonical-core.js";
 
 export function sha256Hex(input: Buffer | string): string {

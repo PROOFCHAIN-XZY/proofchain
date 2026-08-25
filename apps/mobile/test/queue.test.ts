@@ -5,14 +5,12 @@ import { createMemoryStore, type KeyValueStore } from "../src/lib/storage";
 
 function payload(weightKg: number): WeighInPayload {
   return {
-    schema: "proofchain.weighin.v1",
+    schema: "proofchain.weighin.v2",
     collectorId: "c1",
     hubId: "h1",
     deviceId: "d1",
     weightKg,
     material: "PET",
-    lat: -1.286389,
-    lng: 36.817223,
     capturedAt: "2026-08-08T10:00:00.000Z",
     photoHash: "a".repeat(64),
     nonce: "b".repeat(32),

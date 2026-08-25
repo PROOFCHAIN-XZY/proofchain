@@ -385,10 +385,10 @@ systemctl --user start docker-desktop
 
 Then retry your docker command.
 
-### "fetch failed" to Nominatim, Horizon or Friendbot — but curl works
+### "fetch failed" to Horizon or Friendbot — but curl works
 
-**Symptom:** `hub:locality`, `hub:relocate "Town, Country"`, `stellar:account` or
-the ledger read-back fail with `fetch failed` / `ETIMEDOUT`, while `curl` to the
+**Symptom:** `stellar:account` or the ledger read-back fail with `fetch failed` /
+`ETIMEDOUT`, while `curl` to the
 same URL from the same machine returns 200. The give-away is the timing: Node
 fails in **well under a second**, which is a connect failure, not a timeout.
 
@@ -397,9 +397,9 @@ Node prefers the AAAA record. `curl` picks IPv4. Common on phone tethering and
 some mobile ISPs. Confirm with:
 
 ```bash
-getent ahosts nominatim.openstreetmap.org        # shows both A and AAAA
-node -e 'fetch("https://nominatim.openstreetmap.org/status.php").then(r=>console.log(r.status)).catch(e=>console.log("fail",e.cause?.code))'
-node --dns-result-order=ipv4first -e 'fetch("https://nominatim.openstreetmap.org/status.php").then(r=>console.log(r.status))'
+getent ahosts horizon-testnet.stellar.org        # shows both A and AAAA
+node -e 'fetch("https://horizon-testnet.stellar.org/").then(r=>console.log(r.status)).catch(e=>console.log("fail",e.cause?.code))'
+node --dns-result-order=ipv4first -e 'fetch("https://horizon-testnet.stellar.org/").then(r=>console.log(r.status))'
 ```
 
 **Solution:** prefer IPv4 for outbound calls:
@@ -411,8 +411,7 @@ export NODE_OPTIONS=--dns-result-order=ipv4first
 Related: on a slow uplink the default timeouts are too tight. Horizon has been
 measured at 11.6 s on a tethered link, where the 8 s `HORIZON_TIMEOUT_MS` default
 silently degrades every audit report's ledger confirmation to "unchecked —
-Horizon unreachable". Raise `HORIZON_TIMEOUT_MS` and `NOMINATIM_TIMEOUT_MS` to
-20000 and 15000 respectively on such a connection.
+Horizon unreachable". Raise `HORIZON_TIMEOUT_MS` to 20000 on such a connection.
 
 ### "Database migrations failed"
 
@@ -687,12 +686,10 @@ Still outstanding, and none of it is on the deployment path:
 
 ## Testing the capture PWA on a real phone
 
-Geolocation, the camera and service workers are all gated behind a **secure
-context**: HTTPS, or `localhost`. A phone opening the app over the office wifi at
-`http://192.168.x.x:3002` is an insecure origin, and the browser will report GPS
-as "permission denied" no matter what the phone's settings say. The app detects
-this and shows a banner naming HTTPS as the cause, rather than letting the
-collector hunt through phone settings.
+The camera and service workers are both gated behind a **secure context**:
+HTTPS, or `localhost`. A phone opening the app over the office wifi at
+`http://192.168.x.x:3002` is an insecure origin, so the camera is refused and the
+service worker never registers — which takes the offline queue with it.
 
 Serve it over HTTPS instead:
 
@@ -702,7 +699,7 @@ npm run dev:capture:https      # or, in apps/capture: npm run preview:https
 
 Vite prints a Network URL such as `https://192.168.46.157:3002/`. The
 certificate is self-signed, so the phone shows a warning once — accept it, and
-the origin becomes a real secure context with working GPS and offline support.
+the origin becomes a real secure context with a working camera and offline support.
 
 Two things to remember:
 
@@ -794,139 +791,3 @@ refused, because that is a live decision rather than history.
 If you retire everything, the apps fall back to their built-in list rather than
 show an empty picker — check **Dashboard → Materials** if collectors report codes
 you thought you had removed.
-
-## Setting the hub location
-
-Weigh-ins are geofenced against a hub, so a hub on the wrong continent
-quarantines everything a developer captures. The pilot spans **Kenya and
-Nigeria** and trials several sites in each, so moving a hub is routine.
-
-The seed defaults to Nairobi. List the known sites in both countries:
-
-```bash
-npm run hub:relocate -- --list
-```
-
-```
-Kenya:   nairobi  mombasa  kisumu  nakuru  eldoret  thika  machakos  malindi
-Nigeria: lagos    abuja    kano    ibadan  port-harcourt  kaduna  benin-city  onitsha
-```
-
-**After seeding** — relocate the existing hub, four equivalent ways:
-
-```bash
-npm run hub:relocate -- lagos                  # a known site
-npm run hub:relocate -- kisumu 500 NBO-01      # site, fence radius, which hub
-npm run hub:relocate -- "Kisii, Kenya"         # anywhere in KE/NG, looked up via OSM
-npm run hub:relocate -- 9.0567 7.4969 300      # an exact coordinate
-```
-
-Free-text lookup needs `NOMINATIM_USER_AGENT` set and is **confined to Kenya and
-Nigeria** — deliberately, because "Lagos" matches Portugal as readily as Nigeria
-and an unbounded search would let a typo move a hub to another continent, where
-every weigh-in fails `geofence_ok` for a reason invisible from the capture app.
-A site name resolves offline from the catalogue and needs no geocoder.
-
-**Before seeding** — the same vocabulary, as environment variables:
-
-```bash
-HUB_SITE=lagos npm run seed                                   # a known site
-HUB_LAT=9.06035 HUB_LNG=7.46783 HUB_GEOFENCE_M=500 npm run seed  # exact coordinate
-```
-
-`HUB_LAT`/`HUB_LNG` win over `HUB_SITE`, so an exact coordinate is never
-second-guessed by a city centre. With `HUB_SITE` the hub's code and name are
-derived from the site (`LAG-01 — Lagos Pilot Hub`) rather than left as Nairobi's;
-override with `HUB_CODE` and `HUB_NAME`.
-
-Catalogue coordinates are **city-centre approximations**, correct for seeding a
-geofence measured in hundreds of metres and not survey data. A real hub's
-coordinate should be taken on site, from a device, and passed explicitly.
-
-Re-enrol the capture device afterwards: it stores the hub's coordinates and
-fence at enrolment so it can refuse an unusable fix before signing, and a stale
-copy would judge against the old location.
-
-### Many hubs, and switching between them on the phone
-
-The capture app shows a **Hub** dropdown on the capture screen, so a collector who
-delivers to a different site can switch without an operator login or any signal.
-
-Create a hub for each catalogue site first — otherwise the dropdown has one entry:
-
-```bash
-npm run hubs:sites                  # a hub per known site, 500 m fence
-npm run hubs:sites -- lagos kano    # only these
-npm run hubs:sites -- --fence 300   # tighter fence
-```
-
-Idempotent by hub code: re-running adds what is missing and never moves an
-existing hub. Development only — a production hub is a real place with a real
-operator, created through `POST /hubs` by someone who has been there.
-
-**How the phone gets the list.** A field device holds no operator token and
-`/hubs` requires one, so the list is snapshotted into the device's provisioning
-at enrolment. Adding hubs later means re-enrolling the phone to pick them up.
-
-**Why this is safe.** The hub id travels inside the signed payload, so a switch is
-recorded rather than implicit, and the server geofences every event against the
-hub it names. Claiming a hub you are not standing at quarantines the weigh-in —
-the dropdown lets a collector say where they are, not where they were. Switching
-also clears any fix already on screen, because that reading was judged against the
-previous hub's fence; the app asks for a new one.
-
-### Putting a place name on the hub
-
-Audit reports can show a human location ("Kaduna, Nigeria") next to the hub
-coordinate. It is resolved from OpenStreetMap's Nominatim once per hub — every
-weigh-in sits inside the hub's fence, so they all share one label — and it is
-free and keyless.
-
-```bash
-NOMINATIM_USER_AGENT="proofchain/0.1 (ops@example.org)"   # required, see below
-npm run hub:locality              # label hubs that have none
-npm run hub:locality -- --force   # re-resolve every hub
-```
-
-`NOMINATIM_USER_AGENT` has no default on purpose. OSM's public instance requires
-an identifying agent with contact details and blocks generic ones, so leaving it
-empty disables the feature rather than risking a ban on an anonymous request. New
-hubs are labelled at creation; a failure there is logged and leaves the label
-null, which the report renders as coordinates alone.
-
-The label is decoration and never evidence: it is not in the signed payload, not
-in the Merkle leaf, and no integrity check reads it. `hub:relocate` clears it,
-since a label resolved for the old coordinate would be actively wrong.
-
-Nothing else hardcodes a coordinate. The demo script and the browser suites read
-the hub from `GET /hubs` at startup, so they follow wherever it is. The fixed
-coordinates in `*/test/*` are unit-test fixtures and are meant to stay fixed.
-
-A note on accuracy: desktop browsers have no GPS chip and fall back to IP-based
-location, typically accurate to hundreds of kilometres. The capture app refuses
-any fix whose error radius exceeds the hub's fence, since such a fix cannot place
-the collector inside it. Use a phone for a realistic fix.
-
-### The demo follows the operator
-
-`npm run demo` resolves your approximate position from your public IP and, if the
-hub is further away than its geofence, moves the hub to you before capturing.
-Without that, running the demo anywhere other than the pilot site quarantines
-every weigh-in and reports only "0/12 passed integrity v1".
-
-Be clear about what this costs: once the hub sits where you are, the server's
-`geofence_ok` check passes by construction and proves nothing on that run. The
-demo prints a warning saying so. The tamper detection in step 3 is unaffected —
-it defeats a forged signature and an inflated weight, neither of which depends on
-location.
-
-| Variable | Effect |
-|---|---|
-| *(none)* | Resolve position from public IP, move the hub if needed |
-| `DEMO_LOCATION=hub` | Never move the hub — use it as seeded |
-| `DEMO_LAT`, `DEMO_LNG` | Use these coordinates instead of an IP lookup |
-| `DEMO_GEOIP_URL` | Point the lookup at a different service |
-
-The lookup sends your IP to `ip-api.com`. Set `DEMO_LOCATION=hub` to avoid that
-call entirely. If the lookup fails for any reason the demo says so and carries on
-with the seeded hub, so an offline machine still runs.

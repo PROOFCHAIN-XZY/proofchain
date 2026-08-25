@@ -30,6 +30,9 @@
       ],
       "@shared/materials": [
         "../../packages/shared/src/materials.ts"
+      ],
+      "@shared/integrity-copy": [
+        "../../packages/shared/src/integrity-copy.ts"
       ]
     }
   },

@@ -20,9 +20,8 @@ import { dirname, resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const shared = require("@proofchain/shared");
-const { privateKeyFromPem, signWeighIn, verifyMerkleProof, haversineMetres } = shared;
+const { privateKeyFromPem, signWeighIn, verifyMerkleProof } = shared;
 
-const formatKm = (m) => (m >= 1000 ? `${(m / 1000).toFixed(0)} km` : `${Math.round(m)} m`);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -32,166 +31,23 @@ const seed = JSON.parse(
   readFileSync(resolve(ROOT, "apps/backend/var/seed-devices.json"), "utf8"),
 );
 
-/**
- * The hub is read from the API, never hardcoded.
- *
- * A fixed coordinate here silently breaks the moment the hub moves — every
- * weigh-in lands outside the geofence and is quarantined, and the demo reports
- * "0/12 passed integrity" without saying why. Reading it means the demo works
- * wherever the hub actually is, including after `npm run hub:relocate`.
- */
+/** The hub is read from the API, never hardcoded. */
 let hub = null;
 
-/** Metres to degrees, so the jitter scales with the hub's own fence. */
-function metresToDegrees(metres, atLatitude) {
-  const lat = metres / 111_320;
-  const lng = metres / (111_320 * Math.cos((atLatitude * Math.PI) / 180));
-  return { lat, lng };
-}
-
-/**
- * Where is the operator running this demo?
- *
- * There is no GPS on a laptop, so this resolves an approximate position from the
- * public IP. It is city-accurate at best, which is fine for its only purpose:
- * putting the hub somewhere the demo can plausibly claim weigh-ins happened.
- *
- * IMPORTANT — what this costs. Moving the hub to the operator makes the server's
- * `geofence_ok` check pass by construction. That check exists to prove a
- * collector stood at the hub; once the hub follows them, it proves nothing. The
- * demo therefore says so out loud rather than presenting a self-satisfied check
- * as evidence. The tamper detection in step 3 is unaffected — it defeats a
- * forged signature and an inflated weight, neither of which depends on location.
- *
- * Set DEMO_LOCATION=hub to keep the seeded hub (offline runs, CI, or when you
- * want the geofence to mean something).
- */
-async function resolveOperatorLocation() {
-  if (process.env.DEMO_LOCATION === "hub") return null;
-
-  const lat = Number(process.env.DEMO_LAT);
-  const lng = Number(process.env.DEMO_LNG);
-  if (Number.isFinite(lat) && Number.isFinite(lng)) {
-    return { lat, lng, label: "DEMO_LAT/DEMO_LNG", source: "env" };
-  }
-
-  try {
-    // Overridable so the offline path is testable, and so an air-gapped setup
-    // can point at its own service instead of a public one.
-    const endpoint =
-      process.env.DEMO_GEOIP_URL ?? "http://ip-api.com/json/?fields=status,country,city,lat,lon";
-    const res = await fetch(endpoint, { signal: AbortSignal.timeout(6000) });
-    const data = await res.json();
-    if (data.status !== "success") throw new Error(data.message ?? "lookup failed");
-    return {
-      lat: data.lat,
-      lng: data.lon,
-      label: `${data.city}, ${data.country}`,
-      source: "ip",
-    };
-  } catch (error) {
-    // Never fail the demo over this: fall back to the hub already configured.
-    console.log(`  could not resolve your location (${error.message}); using the seeded hub`);
-    return null;
-  }
-}
-
-/** Moves the hub via the dev-only script, which refuses to run in production. */
-function relocateHub(lat, lng, radiusM, code) {
-  execFileSync(
-    "npx",
-    [
-      "ts-node",
-      "-r",
-      "tsconfig-paths/register",
-      "src/database/relocate-hub.ts",
-      String(lat),
-      String(lng),
-      String(radiusM),
-      code,
-    ],
-    { cwd: resolve(ROOT, "apps/backend"), encoding: "utf8", stdio: "pipe" },
-  );
-}
-
-function log(step, message) {
-  console.log(`\n\x1b[36m[${step}]\x1b[0m ${message}`);
-}
-
-/**
- * Anchoring blocks this process for several seconds, long enough for the server
- * to close an idle keep-alive socket. The pooled connection then looks usable but
- * is already gone, and the next request fails at the transport layer before any
- * HTTP status exists. Retry transport failures; never retry an HTTP error, since
- * those are real answers about the state of the system.
- */
-async function fetchWithRetry(url, init, attempts = 3) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await fetch(url, init);
-    } catch (error) {
-      if (attempt >= attempts) throw error;
-      await new Promise((r) => setTimeout(r, 250 * attempt));
-    }
-  }
-}
-
-async function api(path, { method = "GET", token, body, headers = {} } = {}) {
-  const res = await fetchWithRetry(`${BACKEND}${path}`, {
-    method,
-    headers: {
-      ...(body ? { "content-type": "application/json" } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      // Extra headers last: the anchor-worker routes authenticate with a shared
-      // token rather than a bearer, and the demo exercises both.
-      ...headers,
-    },
-    // A fresh connection per request keeps a long synchronous step from
-    // poisoning the pool.
-    keepalive: false,
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-
-  const text = await res.text();
-  // Parse arrays as well as objects: list endpoints such as /hubs return `[...]`,
-  // and treating those as plain text silently yields a string that fails later
-  // with something unhelpful like "hubs.find is not a function".
-  const trimmed = text.trim();
-  const looksJson = trimmed.startsWith("{") || trimmed.startsWith("[");
-  const data = text && looksJson ? JSON.parse(text) : text;
-
-  if (!res.ok) {
-    throw new Error(`${method} ${path} -> ${res.status}: ${text.slice(0, 400)}`);
-  }
-  return data;
-}
-
-/**
- * Bytes that pass the server's image-signature check.
- *
- * A real JPEG header followed by noise: the noise makes every weigh-in's
- * photoHash distinct, and the header is what stops the upload being refused as
- * "not a recognised image".
- */
 function fakeJpeg() {
   return Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), randomBytes(512)]);
 }
 
-/** A plausible weigh-in, jittered inside the hub geofence. */
+/** A plausible weigh-in. */
 function buildWeighIn(device, index) {
   const photoBytes = fakeJpeg();
-  const jitter = metresToDegrees(hub.geofenceRadiusM * 0.5, hub.lat);
   return {
-    schema: "proofchain.weighin.v1",
+    schema: "proofchain.weighin.v2",
     collectorId: device.collectorId,
     hubId: device.hubId,
     deviceId: device.deviceId,
     weightKg: Number((8 + Math.random() * 20).toFixed(3)),
     material: "PET",
-    // Jitter to a quarter of the fence, so weigh-ins scatter realistically
-    // around the hub while staying comfortably inside it.
-    lat: Number((hub.lat + (Math.random() - 0.5) * jitter.lat).toFixed(6)),
-    lng: Number((hub.lng + (Math.random() - 0.5) * jitter.lng).toFixed(6)),
     capturedAt: new Date(Date.now() - (index + 1) * 60_000).toISOString(),
     photoHash: createHash("sha256").update(photoBytes).digest("hex"),
     nonce: randomBytes(16).toString("hex"),
@@ -235,28 +91,11 @@ async function main() {
   });
   console.log(`  logged in as ${role}`);
 
-  let hubs = await api("/hubs", { token: accessToken });
+  const hubs = await api("/hubs", { token: accessToken });
   hub = hubs.find((h) => h.id === seed.hubId) ?? hubs[0];
   if (!hub) throw new Error("no hubs found — run the seed first");
 
-  const here = await resolveOperatorLocation();
-  if (here) {
-    const away = haversineMetres(here.lat, here.lng, hub.lat, hub.lng);
-    if (away > hub.geofenceRadiusM) {
-      console.log(
-        `  you are ${formatKm(away)} from ${hub.code}; moving the hub to ${here.label}`,
-      );
-      relocateHub(here.lat, here.lng, hub.geofenceRadiusM, hub.code);
-      hubs = await api("/hubs", { token: accessToken });
-      hub = hubs.find((h) => h.id === hub.id) ?? hubs[0];
-      console.log(
-        `  \x1b[33mnote:\x1b[0m the hub now sits where you are, so the geofence check ` +
-          `passes by construction and proves nothing on this run.`,
-      );
-    }
-  }
-
-  console.log(`  hub ${hub.code} at ${hub.lat}, ${hub.lng} (fence ${hub.geofenceRadiusM} m)`);
+  console.log(`  hub ${hub.code}`);
 
   log("2/8", "Capturing signed weigh-ins from enrolled devices");
   const eventIds = [];

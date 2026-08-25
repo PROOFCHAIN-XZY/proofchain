@@ -7,6 +7,7 @@ import type {
 import { AnchorAttemptsService } from "../../src/batches/anchor-attempts.service";
 import { ReportsService } from "../../src/reports/reports.service";
 import { MaterialsService } from "../../src/materials/materials.service";
+import { RegistryService } from "../../src/collectors/registry.service";
 import {
   AnchorAttemptEntity,
   AnchorRecordEntity,
@@ -54,6 +55,16 @@ export function buildMaterialsService(dataSource: DataSource): MaterialsService 
     dataSource.getRepository(MaterialEntity),
     dataSource.getRepository(CollectionEventEntity),
     dataSource.getRepository(BatchEntity),
+  );
+}
+
+/** Collectors, devices and hubs — the registry a capture device is told about. */
+export function buildRegistryService(dataSource: DataSource): RegistryService {
+  stubRequiredEnv();
+  return new RegistryService(
+    dataSource.getRepository(CollectorEntity),
+    dataSource.getRepository(DeviceEntity),
+    dataSource.getRepository(HubEntity),
   );
 }
 

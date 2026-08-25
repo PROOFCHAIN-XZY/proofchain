@@ -11,16 +11,13 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
-    "//prod": "The :prod variants run the COMPILED build. A deployed image has no ts-node — devDependencies are pruned — so the development commands above cannot run there.",
+    "//prod": "The :prod variants run the COMPILED build. A deployed image has no ts-node \u2014 devDependencies are pruned \u2014 so the development commands above cannot run there.",
     "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
     "admin:create": "ts-node -r tsconfig-paths/register src/database/create-admin.ts",
     "admin:create:prod": "node dist/database/create-admin.js",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/database/data-source.ts",
-    "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
-    "hub:relocate": "ts-node -r tsconfig-paths/register src/database/relocate-hub.ts",
-    "hub:locality": "ts-node -r tsconfig-paths/register src/database/backfill-hub-locality.ts",
-    "hubs:sites": "ts-node -r tsconfig-paths/register src/database/seed-hub-sites.ts"
+    "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
